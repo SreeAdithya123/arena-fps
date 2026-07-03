@@ -1,0 +1,20 @@
+{
+  "name": "arena-fps",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port 5173 --strictPort",
+    "dev:worker": "wrangler dev --port 8787",
+    "build": "vite build",
+    "deploy": "vite build && wrangler deploy",
+    "test": "node test/headless.js",
+    "test:net": "node test/net.js"
+  },
+  "dependencies": {
+    "three": "^0.178.0"
+  },
+  "devDependencies": {
+    "vite": "^6.3.5",
+    "wrangler": "^4.0.0"
+  }
+}

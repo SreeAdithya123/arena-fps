@@ -1,0 +1,327 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: 100%; height: 100%;
+  overflow: hidden;
+  background: #0b0d10;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  user-select: none;
+}
+
+#app { position: fixed; inset: 0; }
+#app canvas { display: block; }
+
+.hidden { display: none !important; }
+
+/* ---------- HUD ---------- */
+#hud {
+  position: fixed; inset: 0;
+  pointer-events: none;
+  color: #e8ecef;
+}
+
+/* crosshair: 4 gap lines + center dot, gap driven by --gap */
+#crosshair {
+  position: absolute; left: 50%; top: 50%;
+  width: 0; height: 0;
+  --gap: 6px;
+}
+#crosshair .l {
+  position: absolute;
+  background: rgba(240, 245, 248, 0.92);
+  box-shadow: 0 0 2px rgba(0,0,0,0.8);
+}
+#crosshair .h { width: 8px; height: 2px; top: -1px; }
+#crosshair .v { width: 2px; height: 8px; left: -1px; }
+#crosshair .left  { right: var(--gap); }
+#crosshair .right { left: var(--gap); }
+#crosshair .up    { bottom: var(--gap); }
+#crosshair .down  { top: var(--gap); }
+#crosshair .dot {
+  position: absolute; left: -1px; top: -1px;
+  width: 2px; height: 2px;
+  background: rgba(240, 245, 248, 0.95);
+}
+
+/* hitmarker */
+#hitmarker {
+  position: absolute; left: 50%; top: 50%;
+  width: 0; height: 0;
+  opacity: 0;
+}
+#hitmarker.show { animation: hitpop 0.18s ease-out; }
+#hitmarker .m {
+  position: absolute; width: 9px; height: 2px;
+  background: #fff;
+  box-shadow: 0 0 3px rgba(0,0,0,0.9);
+}
+#hitmarker.kill .m { background: #ff5340; width: 12px; }
+#hitmarker.head .m { background: #ffcf40; }
+#hitmarker .m1 { transform: translate(4px, 4px) rotate(45deg); }
+#hitmarker .m2 { transform: translate(-12px, 4px) rotate(-45deg); }
+#hitmarker .m3 { transform: translate(4px, -5px) rotate(-45deg); }
+#hitmarker .m4 { transform: translate(-12px, -5px) rotate(45deg); }
+@keyframes hitpop {
+  0% { opacity: 1; transform: scale(1.25); }
+  100% { opacity: 0; transform: scale(0.9); }
+}
+
+/* damage numbers */
+.dmgnum {
+  position: absolute;
+  font-weight: 700; font-size: 17px;
+  color: #ffffff;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+  animation: dmgfloat 0.7s ease-out forwards;
+  transform: translate(-50%, -100%);
+}
+.dmgnum.head { color: #ffcf40; font-size: 21px; }
+@keyframes dmgfloat {
+  0% { opacity: 1; margin-top: 0; }
+  100% { opacity: 0; margin-top: -38px; }
+}
+
+/* bottom bars */
+#health-wrap {
+  position: absolute; left: 28px; bottom: 26px;
+  width: 230px;
+}
+#health-bar-bg {
+  height: 10px; background: rgba(10, 14, 18, 0.65);
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: 3px; overflow: hidden;
+}
+#health-bar {
+  height: 100%; width: 100%;
+  background: linear-gradient(90deg, #3ddc84, #2fbf71);
+  transition: width 0.12s ease-out;
+}
+#health-bar.low { background: linear-gradient(90deg, #ff5340, #d63e2e); }
+#health-num {
+  font-size: 26px; font-weight: 700; margin-bottom: 4px;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.8);
+}
+
+#ammo {
+  position: absolute; right: 30px; bottom: 24px;
+  text-align: right;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.8);
+}
+#ammo .mag { font-size: 40px; font-weight: 800; }
+#ammo .reserve { font-size: 20px; font-weight: 600; color: rgba(232,236,239,0.65); }
+#ammo .wname {
+  font-size: 12px; letter-spacing: 2px; text-transform: uppercase;
+  color: rgba(232,236,239,0.6); margin-top: 2px;
+}
+#ammo.reloading .mag { color: #ffcf40; }
+
+#score {
+  position: absolute; top: 20px; right: 26px;
+  font-size: 14px; letter-spacing: 1px;
+  color: rgba(232,236,239,0.85);
+  text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+  text-align: right;
+}
+/* in rooms the centered timer owns the top edge; K/D lives on the Tab scoreboard */
+#hud.mp #score { display: none; }
+#fps {
+  position: absolute; top: 20px; left: 26px;
+  font-size: 12px; color: rgba(232,236,239,0.5);
+  text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+}
+
+/* damage vignette */
+#damage-vignette {
+  position: absolute; inset: 0;
+  background: radial-gradient(ellipse at center, transparent 45%, rgba(200, 30, 20, 0.55) 100%);
+  opacity: 0;
+  transition: opacity 0.08s linear;
+}
+
+/* ---------- overlays ---------- */
+.overlay {
+  position: fixed; inset: 0;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  background: rgba(8, 10, 13, 0.82);
+  backdrop-filter: blur(3px);
+  color: #e8ecef;
+  z-index: 10;
+}
+.overlay.hidden { display: none; }
+.overlay h1 {
+  font-size: 44px; font-weight: 800; letter-spacing: 10px;
+  margin-bottom: 6px;
+}
+.overlay h1 .accent { color: #ffcf40; }
+.overlay .sub {
+  font-size: 14px; color: rgba(232,236,239,0.6);
+  margin-bottom: 36px; letter-spacing: 2px;
+}
+.overlay .died {
+  color: #ff5340; font-size: 22px; font-weight: 700;
+  letter-spacing: 4px; margin-bottom: 24px;
+}
+
+.cards { display: flex; gap: 18px; }
+.card {
+  width: 210px; padding: 20px 18px;
+  background: rgba(20, 25, 31, 0.92);
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: transform 0.1s ease, border-color 0.1s ease;
+}
+.card:hover {
+  transform: translateY(-4px);
+  border-color: #ffcf40;
+}
+.card .wtitle { font-size: 18px; font-weight: 700; margin-bottom: 2px; }
+.card .wtype {
+  font-size: 11px; letter-spacing: 2px; text-transform: uppercase;
+  color: #ffcf40; margin-bottom: 10px;
+}
+.card .wdesc { font-size: 12.5px; color: rgba(232,236,239,0.7); line-height: 1.45; min-height: 54px; }
+.card .stat { margin-top: 8px; font-size: 11px; color: rgba(232,236,239,0.55); }
+.card .statbar {
+  height: 4px; margin-top: 3px; border-radius: 2px;
+  background: rgba(255,255,255,0.12);
+  overflow: hidden;
+}
+.card .statbar i { display: block; height: 100%; background: #ffcf40; }
+
+.overlay .hint {
+  margin-top: 34px; font-size: 13px;
+  color: rgba(232,236,239,0.5); letter-spacing: 1px;
+  line-height: 1.8; text-align: center;
+}
+
+#resume-overlay .sub { margin-bottom: 0; }
+#resume-overlay { cursor: pointer; }
+
+/* ---------- main menu / friends menu ---------- */
+.modes { display: flex; gap: 20px; }
+.mode-btn {
+  width: 250px; padding: 26px 20px;
+  background: rgba(20, 25, 31, 0.92);
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 8px;
+  color: #e8ecef;
+  font: 700 18px "Segoe UI", system-ui, sans-serif;
+  letter-spacing: 1.5px;
+  cursor: pointer;
+  transition: transform 0.1s ease, border-color 0.1s ease;
+}
+.mode-btn span {
+  display: block; margin-top: 8px;
+  font-size: 12px; font-weight: 400;
+  color: rgba(232,236,239,0.6); letter-spacing: 0.5px;
+}
+.mode-btn:hover { transform: translateY(-4px); border-color: #ffcf40; }
+
+.friends-box {
+  display: flex; flex-direction: column; align-items: center; gap: 14px;
+  background: rgba(20, 25, 31, 0.92);
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 8px; padding: 28px 34px;
+}
+.friends-box label { font-size: 11px; letter-spacing: 2px; color: rgba(232,236,239,0.6); }
+.friends-box input {
+  background: rgba(10, 13, 17, 0.9);
+  border: 1px solid rgba(255,255,255,0.2);
+  border-radius: 5px;
+  color: #e8ecef;
+  font: 700 18px "Segoe UI", system-ui, sans-serif;
+  letter-spacing: 2px; text-align: center;
+  padding: 10px 12px; width: 220px;
+  text-transform: uppercase;
+}
+.friends-box input:focus { outline: none; border-color: #ffcf40; }
+.friends-row { display: flex; align-items: center; gap: 18px; margin-top: 6px; }
+.friends-row .or { color: rgba(232,236,239,0.45); font-size: 13px; }
+.join-group { display: flex; gap: 8px; }
+#code-input { width: 100px; }
+.big-btn {
+  background: #ffcf40; border: none; border-radius: 5px;
+  color: #14181d;
+  font: 800 14px "Segoe UI", system-ui, sans-serif;
+  letter-spacing: 1.5px;
+  padding: 12px 18px; cursor: pointer;
+  transition: transform 0.1s ease;
+}
+.big-btn:hover { transform: translateY(-2px); }
+.big-btn:disabled { opacity: 0.5; cursor: wait; }
+.back-btn {
+  background: none; border: none; color: rgba(232,236,239,0.6);
+  font: 600 13px "Segoe UI", system-ui, sans-serif;
+  letter-spacing: 1px; cursor: pointer; margin-top: 4px;
+}
+.back-btn:hover { color: #e8ecef; }
+#friends-status { min-height: 18px; font-size: 13px; color: #ff6a55; }
+.room-line {
+  font-size: 15px; letter-spacing: 1.5px; margin-bottom: 18px;
+  color: rgba(232,236,239,0.85);
+}
+.room-line b { color: #ffcf40; letter-spacing: 4px; }
+
+/* ---------- match UI ---------- */
+#match-top {
+  position: absolute; top: 16px; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 18px;
+  font: 800 22px "Segoe UI", system-ui, sans-serif;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.8);
+}
+#score-red { color: #ff6a55; }
+#score-blue { color: #5f9dff; }
+#match-timer { font-size: 26px; letter-spacing: 1px; }
+#match-timer.urgent { color: #ff5340; }
+#room-tag {
+  position: absolute; top: 52px; left: 50%; transform: translateX(-50%);
+  font-size: 11px; letter-spacing: 2px; color: rgba(232,236,239,0.55);
+  text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+}
+#room-tag b { color: #ffcf40; letter-spacing: 3px; }
+
+#killfeed {
+  position: absolute; top: 54px; right: 26px;
+  display: flex; flex-direction: column; gap: 4px;
+  font-size: 13px; text-align: right;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+}
+.feed-item b.red { color: #ff6a55; }
+.feed-item b.blue { color: #5f9dff; }
+
+#scoreboard {
+  position: absolute; left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  width: 560px;
+  background: rgba(12, 16, 21, 0.92);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 8px; padding: 20px 24px;
+}
+.sb-title { text-align: center; font: 800 17px "Segoe UI", sans-serif; letter-spacing: 2px; margin-bottom: 14px; }
+.sb-cols { display: flex; gap: 20px; }
+.sb-team { flex: 1; }
+.sb-team h3 { font-size: 12px; letter-spacing: 2px; margin-bottom: 8px; }
+#sb-red h3 { color: #ff6a55; }
+#sb-blue h3 { color: #5f9dff; }
+.sb-row { display: flex; justify-content: space-between; font-size: 13.5px; padding: 3px 6px; border-radius: 3px; }
+.sb-row.me { background: rgba(255, 207, 64, 0.12); }
+.sb-foot { text-align: center; margin-top: 14px; font-size: 13px; color: #ffcf40; letter-spacing: 1px; min-height: 16px; }
+
+/* ---------- DMR scope ---------- */
+#scope-overlay { position: absolute; inset: 0; }
+#scope-overlay .ring {
+  position: absolute; left: 50%; top: 50%;
+  width: min(88vh, 88vw); height: min(88vh, 88vw);
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  box-shadow: 0 0 0 200vmax rgba(4, 6, 8, 0.97);
+  border: 2px solid rgba(0,0,0,0.9);
+}
+#scope-overlay .cross-h, #scope-overlay .cross-v {
+  position: absolute; left: 50%; top: 50%;
+  background: rgba(10, 12, 14, 0.85);
+}
+#scope-overlay .cross-h { width: min(88vh, 88vw); height: 1.5px; transform: translate(-50%, -50%); }
+#scope-overlay .cross-v { height: min(88vh, 88vw); width: 1.5px; transform: translate(-50%, -50%); }
