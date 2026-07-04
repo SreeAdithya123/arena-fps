@@ -1,11 +1,13 @@
 // Glue: fixed-timestep sim loop + render interpolation + mode flow.
-// Modes: 'menu' -> 'bots' (local sim with bots) or 'friends' (local sim
-// without bots + NetClient rooms). The sim itself is identical in both.
+// Modes: 'menu' -> 'bots' (local sim with bots) or 'friends' (rooms with a
+// lobby -> live -> over -> lobby lifecycle owned by the server).
 
 import * as THREE from 'three';
 import {
   createSim, simTick, respawnPlayer, eyePos, currentSpread, DT, ARENA, WEAPONS,
 } from './sim/sim.js';
+import { aimDir, norm } from './sim/math.js';
+import { raycastArena } from './sim/arena.js';
 import { Input } from './input.js';
 import { Hud } from './hud.js';
 import { GameRenderer } from './render/renderer.js';
@@ -32,6 +34,16 @@ let currentWeapon = 'ar';
 let matchOver = false;
 let myName = 'PLAYER';
 let stateSendTick = 0;
+
+// spectator camera (friends mode, team 'spec')
+const spectate = {
+  active: false,
+  free: false,
+  idx: 0,
+  pos: { x: 0, y: 10, z: 16 },
+  lastF: false,
+  lastAim: false,
+};
 
 // pre-menu backdrop
 state.player.pos = { ...ARENA.playerSpawns[0].pos };
@@ -61,10 +73,13 @@ function teamOf(id) {
 // ---------- menu flow ----------
 function showMainMenu() {
   mode = 'menu';
+  exitSpectate();
   hud.hideLoadout();
   hud.hideResume();
   hud.hideFriends();
+  hud.hideLobby();
   hud.hideMatchUI();
+  hud.showScoreboard(false);
   hud.showMenu(startBots, openFriends);
 }
 
@@ -75,16 +90,19 @@ function startBots() {
   renderer.setBotsVisible(true);
   remotesView.clear();
   mode = 'bots';
-  hud.showLoadout(false, (id) => {
-    sfx.unlock();
-    currentWeapon = id;
-    const sp = respawnPlayer(state, id);
-    afterSpawn(sp);
-  });
+  hud.showLoadout(false, pickBotsWeapon, null, showMainMenu);
 }
 
-function openFriends() {
+function pickBotsWeapon(id) {
+  sfx.unlock();
+  currentWeapon = id;
+  const sp = respawnPlayer(state, id);
+  afterSpawn(sp);
+}
+
+function openFriends(prefillCode = '') {
   hud.hideMenu();
+  if (prefillCode) hud.el.codeInput.value = prefillCode;
   hud.showFriends({
     onCreate: (name) => connectRoom(name, null),
     onJoin: (name, code) => connectRoom(name, code),
@@ -99,7 +117,7 @@ async function connectRoom(name, code) {
     if (!code) code = await NetClient.createRoom();
     const n = new NetClient();
     wireNet(n);
-    const welcome = await n.connect(code, name, currentWeapon);
+    await n.connect(code, name, currentWeapon);
     net = n;
     mode = 'friends';
     matchOver = false;
@@ -108,20 +126,44 @@ async function connectRoom(name, code) {
     state = createSim(Date.now() % 100000);
     state.bots.length = 0;
     renderer.setBotsVisible(false);
-    remotesView.clear();
-    for (const [id, r] of n.remotes) remotesView.ensure(id, r.name, r.team);
+    rebuildRemotes();
 
-    state.player.pos = { ...welcome.spawn.pos };
-    input.setView(welcome.spawn.yaw, 0);
+    state.player.pos = { ...ARENA.playerSpawns[0].pos };
+    input.setView(ARENA.playerSpawns[0].yaw, 0);
     prevEye = currEye = eyePos(state.player);
 
+    hud.hideMenu();
     hud.hideFriends();
-    hud.showMatchUI(code);
-    hud.setTeamScores(n.scores.red, n.scores.blue);
-    hud.showLoadout(false, pickFriendsWeapon, { code, team: n.team });
+    if (n.phase === 'live') {
+      // late join into a running match
+      hud.showMatchUI(code);
+      hud.setTeamScores(n.scores.red, n.scores.blue);
+      if (n.team === 'spec') enterSpectate();
+      else hud.showLoadout(false, pickFriendsWeapon, { code, team: n.team }, leaveRoom);
+    } else {
+      showLobbyScreen();
+    }
   } catch (err) {
     hud.setFriendsStatus(err.message || 'Connection failed.');
   }
+}
+
+function roomLink() {
+  return `${location.origin}/?room=${net.code}`;
+}
+
+function showLobbyScreen() {
+  hud.hideMatchUI();
+  hud.hideLoadout();
+  hud.hideResume();
+  hud.showScoreboard(false);
+  hud.showLobby(net.code, {
+    onSwitch: (team) => net.sendSwitchTeam(team),
+    onStart: () => net.sendStart(),
+    onLeave: leaveRoom,
+    link: roomLink(),
+  });
+  hud.updateLobby({ leader: net.leader, players: net.board }, net.id, net.team);
 }
 
 function pickFriendsWeapon(id) {
@@ -145,13 +187,119 @@ function leaveRoom() {
   showMainMenu();
 }
 
+function rebuildRemotes() {
+  remotesView.clear();
+  if (!net) return;
+  for (const [id, r] of net.remotes) {
+    if (r.team !== 'spec') remotesView.ensure(id, r.name, r.team);
+  }
+}
+
+// ---------- spectate ----------
+function spectateTargets() {
+  const out = [];
+  if (!net) return out;
+  for (const [id, r] of net.remotes) {
+    if (r.team === 'spec' || !r.alive) continue;
+    if (net.sampleRemote(id)) out.push(id);
+  }
+  return out;
+}
+
+function enterSpectate() {
+  spectate.active = true;
+  spectate.free = false;
+  spectate.idx = 0;
+  spectate.pos = { x: 0, y: 10, z: 16 };
+  hud.hideLoadout();
+  hud.setSpectate(true);
+  input.lock();
+}
+
+function exitSpectate() {
+  if (!spectate.active) return;
+  spectate.active = false;
+  hud.setSpectate(false);
+}
+
+function spectateHandleCmd(cmd) {
+  const targets = spectateTargets();
+  if (cmd.fireEdge && targets.length) {
+    spectate.free = false;
+    spectate.idx = (spectate.idx + 1) % targets.length;
+  }
+  if (cmd.aim && !spectate.lastAim && targets.length) {
+    spectate.free = false;
+    spectate.idx = (spectate.idx - 1 + targets.length) % targets.length;
+  }
+  spectate.lastAim = cmd.aim;
+  const fHeld = input.keys.has('KeyF');
+  if (fHeld && !spectate.lastF) spectate.free = !spectate.free;
+  spectate.lastF = fHeld;
+}
+
+// per-frame spectator camera; returns camera pose or null
+function spectateCamera(dt) {
+  const targets = spectateTargets();
+  if (!spectate.free && targets.length) {
+    const id = targets[spectate.idx % targets.length];
+    const s = net.sampleRemote(id);
+    const head = { x: s.p[0], y: s.p[1] + (s.crouch ? 1.1 : 1.6), z: s.p[2] };
+    const dir = aimDir(input.yaw, input.pitch);
+    // pull the orbit camera in when a wall sits between it and the target
+    let r = 4.2;
+    const back = norm({ x: -dir.x, y: -dir.y + 0.07, z: -dir.z });
+    const hit = raycastArena(head, back, r);
+    if (hit) r = Math.max(0.6, hit.t - 0.3);
+    spectate.pos = { x: head.x + back.x * r, y: head.y + back.y * r, z: head.z + back.z * r };
+    hud.setSpectate(true, nameOf(id));
+    return { pos: spectate.pos, yaw: input.yaw, pitch: input.pitch };
+  }
+  // free fly
+  const k = input.keys;
+  const speed = (k.has('ShiftLeft') ? 22 : 12) * dt;
+  const fwd = aimDir(input.yaw, input.pitch);
+  const right = { x: Math.cos(input.yaw), z: -Math.sin(input.yaw) };
+  const mz = (k.has('KeyW') ? 1 : 0) - (k.has('KeyS') ? 1 : 0);
+  const mx = (k.has('KeyD') ? 1 : 0) - (k.has('KeyA') ? 1 : 0);
+  spectate.pos.x += (fwd.x * mz + right.x * mx) * speed;
+  spectate.pos.y += (fwd.y * mz + ((k.has('Space') ? 1 : 0) - (k.has('KeyC') ? 1 : 0))) * speed;
+  spectate.pos.z += (fwd.z * mz + right.z * mx) * speed;
+  spectate.pos.y = Math.max(0.5, Math.min(30, spectate.pos.y));
+  hud.setSpectate(true, 'FREE CAMERA');
+  return { pos: spectate.pos, yaw: input.yaw, pitch: input.pitch };
+}
+
 // ---------- net events ----------
 function wireNet(n) {
   n.on('joined', (msg) => {
-    remotesView.ensure(msg.id, msg.name, msg.team);
+    if (msg.team !== 'spec') remotesView.ensure(msg.id, msg.name, msg.team);
   });
   n.on('left', (msg) => {
     remotesView.remove(msg.id);
+    if (!hud.el.lobby.classList.contains('hidden')) {
+      hud.updateLobby({ leader: n.leader, players: n.board }, n.id, n.team);
+    }
+  });
+  n.on('roster', () => {
+    if (!hud.el.lobby.classList.contains('hidden')) {
+      hud.updateLobby({ leader: n.leader, players: n.board }, n.id, n.team);
+    }
+  });
+  n.on('start', () => {
+    matchOver = false;
+    netHealth = 100;
+    hud.hideLobby();
+    hud.showScoreboard(false);
+    rebuildRemotes(); // teams are final now — meshes get the right colors
+    hud.showMatchUI(n.code);
+    hud.setTeamScores(0, 0);
+    if (n.team === 'spec') {
+      enterSpectate();
+    } else {
+      exitSpectate();
+      hud.showLoadout(false, pickFriendsWeapon, { code: n.code, team: n.team }, leaveRoom);
+    }
   });
   n.on('shot', (msg) => {
     const o = { x: msg.o[0], y: msg.o[1], z: msg.o[2] };
@@ -178,8 +326,8 @@ function wireNet(n) {
       input.unlock();
       hud.hideResume();
       setTimeout(() => {
-        if (mode === 'friends' && !state.player.alive) {
-          hud.showLoadout(true, pickFriendsWeapon, { code: net.code, team: net.team });
+        if (mode === 'friends' && net && net.phase === 'live' && !state.player.alive) {
+          hud.showLoadout(true, pickFriendsWeapon, { code: net.code, team: net.team }, leaveRoom);
         }
       }, 600);
     } else {
@@ -202,28 +350,28 @@ function wireNet(n) {
   });
   n.on('over', (msg) => {
     matchOver = true;
+    input.unlock();
+    hud.hideResume();
+    hud.hideLoadout();
     hud.setScoreboard(msg.board, msg.scores, n.id,
-      msg.scores.red === msg.scores.blue ? 'DRAW — next round starting soon'
-        : `${msg.scores.red > msg.scores.blue ? 'RED' : 'BLUE'} WINS — next round starting soon`);
+      (msg.scores.red === msg.scores.blue ? 'DRAW' :
+        `${msg.scores.red > msg.scores.blue ? 'RED' : 'BLUE'} WINS`) + ' — back to lobby in a moment…');
     hud.showScoreboard(true);
   });
-  n.on('reset', (msg) => {
+  n.on('lobby', () => {
     matchOver = false;
-    netHealth = 100;
-    hud.showScoreboard(false);
-    hud.hideLoadout();
-    const spawn = msg.spawns[net.id];
-    if (spawn) {
-      respawnPlayer(state, currentWeapon, spawn);
-      viewmodel.setWeapon(currentWeapon);
-      if (!input.locked) hud.showResume(() => { hud.hideResume(); input.lock(); });
-    }
+    exitSpectate();
+    state.player.alive = false;
+    input.unlock();
+    showLobbyScreen();
   });
   n.on('error', (msg) => hud.setFriendsStatus(msg.msg));
   n.on('close', () => {
     if (mode !== 'friends') return;
+    exitSpectate();
     remotesView.clear();
     hud.hideMatchUI();
+    hud.hideLobby();
     hud.showScoreboard(false);
     hud.hideLoadout();
     mode = 'menu';
@@ -239,14 +387,22 @@ function wireNet(n) {
   });
 }
 
-showMainMenu();
+// boot: deep link support — /?room=CODE opens the join screen pre-filled
+const roomParam = new URLSearchParams(location.search).get('room');
+if (roomParam && /^[A-Za-z]{5}$/.test(roomParam)) {
+  mode = 'menu';
+  openFriends(roomParam.toUpperCase());
+} else {
+  showMainMenu();
+}
 
 input.onUnlock = () => {
-  if (state.player.alive && hud.el.loadout.classList.contains('hidden') && mode !== 'menu') {
-    hud.showResume(() => {
-      hud.hideResume();
-      input.lock();
-    });
+  const inGame = (state.player.alive || spectate.active) && mode !== 'menu';
+  if (inGame && hud.el.loadout.classList.contains('hidden') && hud.el.lobby.classList.contains('hidden') && !matchOver) {
+    hud.showResume(
+      () => { hud.hideResume(); input.lock(); },
+      () => { if (mode === 'friends') leaveRoom(); else showMainMenu(); }
+    );
   }
 };
 
@@ -314,12 +470,7 @@ function handleEvent(ev) {
       hud.hideResume();
       setTimeout(() => {
         if (mode === 'bots') {
-          hud.showLoadout(true, (id) => {
-            sfx.unlock();
-            currentWeapon = id;
-            const sp = respawnPlayer(state, id);
-            afterSpawn(sp);
-          });
+          hud.showLoadout(true, pickBotsWeapon, null, showMainMenu);
         }
       }, 600);
       break;
@@ -333,7 +484,9 @@ let fps = 60, fpsFrames = 0, fpsTime = 0;
 
 function runTick() {
   prevEye = currEye;
-  const events = simTick(state, input.sample());
+  const cmd = input.sample();
+  if (spectate.active) spectateHandleCmd(cmd);
+  const events = simTick(state, cmd);
   currEye = eyePos(state.player);
   renderer.snapshotBots(state.bots);
   for (const ev of events) handleEvent(ev);
@@ -369,20 +522,26 @@ function frame(now) {
   const p = state.player;
   const w = p.weapon;
 
-  const eye = {
-    x: prevEye.x + (currEye.x - prevEye.x) * alpha,
-    y: prevEye.y + (currEye.y - prevEye.y) * alpha,
-    z: prevEye.z + (currEye.z - prevEye.z) * alpha,
-  };
-  const recoilP = w ? w.recoilPitch * 0.7 : 0;
-  const recoilY = w ? w.recoilYaw * 0.7 : 0;
-  const targetFov = p.aiming && w ? WEAPONS[w.id].aimFov : 75 + (p.sprinting ? 5 : 0);
-  renderer.setCamera(eye, input.yaw, input.pitch, recoilP, recoilY, targetFov);
+  if (spectate.active) {
+    const cam = spectateCamera(dt);
+    renderer.setCamera(cam.pos, cam.yaw, cam.pitch, 0, 0, 75);
+  } else {
+    const eye = {
+      x: prevEye.x + (currEye.x - prevEye.x) * alpha,
+      y: prevEye.y + (currEye.y - prevEye.y) * alpha,
+      z: prevEye.z + (currEye.z - prevEye.z) * alpha,
+    };
+    const recoilP = w ? w.recoilPitch * 0.7 : 0;
+    const recoilY = w ? w.recoilYaw * 0.7 : 0;
+    const targetFov = p.aiming && w ? WEAPONS[w.id].aimFov : 75 + (p.sprinting ? 5 : 0);
+    renderer.setCamera(eye, input.yaw, input.pitch, recoilP, recoilY, targetFov);
+  }
 
   renderer.updateBots(state.bots, alpha, dt);
   if (net) remotesView.update(net, dt);
   effects.update(dt);
 
+  viewmodel.root.visible = !spectate.active;
   const md = input.consumeFrameDelta();
   viewmodel.update(dt, {
     mouseDX: md.x,
@@ -392,19 +551,17 @@ function frame(now) {
     reloadFrac: w && w.reloading ? 1 - w.reloadT / 2.2 : 0,
     aiming: p.aiming,
   });
-  hud.setScope(viewmodel.scopedIn());
+  hud.setScope(!spectate.active && viewmodel.scopedIn());
 
-  if (p.alive && w) {
+  if (p.alive && w && !spectate.active) {
     hud.setHealth(mode === 'friends' ? netHealth : p.health);
     hud.setAmmo(w);
     hud.setCrosshairSpread(currentSpread(w, p.moveFrac, !p.onGround, p.crouched, p.aiming));
   }
 
   if (mode === 'friends' && net) {
-    hud.setTimer(net.endsAt - Date.now());
-    const me = net.board.find((b) => b.id === net.id);
-    if (me) hud.setScore(me.kills, me.deaths);
-    hud.showScoreboard(matchOver || input.keys.has('Tab'));
+    if (net.phase === 'live') hud.setTimer(net.endsAt - Date.now());
+    hud.showScoreboard(matchOver || (net.phase === 'live' && input.keys.has('Tab')));
   } else {
     hud.setScore(state.kills, state.deaths);
   }
@@ -418,6 +575,7 @@ requestAnimationFrame(frame);
 window.__game = {
   get state() { return state; },
   get net() { return net; },
+  get spectate() { return spectate; },
   input,
   hud,
   connectRoom,
@@ -426,7 +584,7 @@ window.__game = {
   leaveRoom,
   fps: () => fps,
   drive: (fn) => { input.drive = fn; },
-  hideOverlays: () => { hud.hideMenu(); hud.hideFriends(); hud.hideLoadout(); hud.hideResume(); },
+  hideOverlays: () => { hud.hideMenu(); hud.hideFriends(); hud.hideLobby(); hud.hideLoadout(); hud.hideResume(); },
   spawn: (weaponId) => { // bots-mode spawn shortcut used by automated checks
     if (mode !== 'bots') { hud.hideMenu(); state = createSim(1337); renderer.setBotsVisible(true); remotesView.clear(); mode = 'bots'; }
     currentWeapon = weaponId;
@@ -449,7 +607,12 @@ window.__game = {
   // Render one frame off-rAF and return a downscaled JPEG (for automated visual checks).
   snap: (w = 480) => {
     const p = state.player;
-    renderer.setCamera(currEye, input.yaw, input.pitch, 0, 0);
+    if (spectate.active) {
+      const cam = spectateCamera(0.016);
+      renderer.setCamera(cam.pos, cam.yaw, cam.pitch, 0, 0, 75);
+    } else {
+      renderer.setCamera(currEye, input.yaw, input.pitch, 0, 0);
+    }
     renderer.updateBots(state.bots, 1, 0.016);
     viewmodel.update(0.016, { mouseDX: 0, mouseDY: 0, speedFrac: p.moveFrac, onGround: p.onGround, reloadFrac: 0, aiming: p.aiming });
     effects.update(0.008);

@@ -1,17 +1,24 @@
 // Cloudflare Worker: serves the built client (static assets) and hosts friend
 // rooms as Durable Objects. One DO instance per room code, WebSockets inside.
 //
+// Room lifecycle: lobby -> live -> over -> lobby. The first player to join is
+// the leader (migrates on leave); only the leader can start a match. In the
+// lobby anyone can switch between red / blue / spectators. Spectators never
+// spawn, never appear in snapshots, and can't deal or take damage.
+//
 // Trust model (friends-scale): clients simulate their own movement and detect
-// their own hits; the server owns health, kills, scores, teams, the 10-minute
-// match timer, and basic sanity checks. The deterministic sim in src/sim/ is
-// untouched and remains the seam for a future fully-authoritative server.
+// their own hits; the server owns teams, health, kills, scores, phase, and the
+// match timer. The deterministic sim in src/sim/ stays the seam for a future
+// fully-authoritative server.
 
 import { ARENA } from '../src/sim/arena.js';
 
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ'; // no I/O — unambiguous
-const MATCH_MS = 10 * 60 * 1000;
-const RESET_DELAY_MS = 15 * 1000;
+const MATCH_MS_DEFAULT = 10 * 60 * 1000;
+const MATCH_MS_MIN = 10 * 1000;
+const LOBBY_RETURN_MS = 10 * 1000;
 const TEAM_CAP = 6;
+const SPEC_CAP = 6;
 const SNAP_HZ = 20;
 const MAX_HIT_DAMAGE = 110; // DMR headshot; anything above is a tampered client
 
@@ -49,13 +56,14 @@ export default {
 export class Room {
   constructor(state) {
     this.state = state;
-    this.clients = new Map(); // id -> { ws, name, team, weapon, health, alive, kills, deaths, p, yaw, pitch, crouch, spawnIdx }
+    this.clients = new Map(); // id -> { ws, name, team('red'|'blue'|'spec'), weapon, health, alive, kills, deaths, p, yaw, pitch, crouch }
     this.nextId = 1;
+    this.leaderId = null;
     this.scores = { red: 0, blue: 0 };
     this.endsAt = 0;
-    this.phase = 'waiting'; // waiting | live | over
+    this.phase = 'lobby'; // lobby | live | over
     this.interval = null;
-    this.resetTimer = null;
+    this.lobbyTimer = null;
   }
 
   async fetch(request) {
@@ -84,65 +92,72 @@ export class Room {
     ws.addEventListener('message', (e) => {
       let msg;
       try { msg = JSON.parse(e.data); } catch { return; }
-      if (id === null) {
-        if (msg.t !== 'join') { ws.close(1002, 'expected join'); return; }
-        id = this.join(ws, msg);
-        return;
+      try {
+        if (id === null) {
+          if (msg.t !== 'join') { ws.close(1002, 'expected join'); return; }
+          id = this.join(ws, msg);
+          return;
+        }
+        this.onMessage(id, msg);
+      } catch (err) {
+        // one bad message must never take down the room
+        console.error('room message error:', err);
       }
-      this.onMessage(id, msg);
     });
     const drop = () => { if (id !== null) this.leave(id); };
     ws.addEventListener('close', drop);
     ws.addEventListener('error', drop);
   }
 
+  count(team) {
+    let n = 0;
+    for (const c of this.clients.values()) if (c.team === team) n++;
+    return n;
+  }
+
   join(ws, msg) {
-    const red = [...this.clients.values()].filter((c) => c.team === 'red').length;
-    const blue = [...this.clients.values()].filter((c) => c.team === 'blue').length;
-    if (red + blue >= TEAM_CAP * 2) {
-      ws.send(JSON.stringify({ t: 'error', msg: 'Room is full (12 players).' }));
+    if (this.clients.size >= TEAM_CAP * 2 + SPEC_CAP) {
+      ws.send(JSON.stringify({ t: 'error', msg: 'Room is full.' }));
       ws.close(1000, 'full');
       return null;
     }
-    const team = blue < red ? 'blue' : 'red';
+    const red = this.count('red'), blue = this.count('blue');
+    let team = blue < red ? 'blue' : 'red';
+    if (red >= TEAM_CAP && blue >= TEAM_CAP) team = 'spec';
+
     const id = this.nextId++;
     const name = String(msg.name || 'PLAYER').slice(0, 14).toUpperCase() || 'PLAYER';
-    const spawn = this.pickSpawn(team, id);
-    // alive:false until the client picks a weapon and sends its first respawn
+    const spawn = this.pickSpawn(team === 'spec' ? 'red' : team, id);
     const client = {
       ws, name, team,
-      weapon: msg.weapon || 'ar',
+      weapon: typeof msg.weapon === 'string' ? msg.weapon : 'ar',
       health: 100, alive: false, kills: 0, deaths: 0,
       p: [spawn.pos.x, spawn.pos.y, spawn.pos.z], yaw: spawn.yaw, pitch: 0, crouch: false,
     };
     this.clients.set(id, client);
-
-    if (this.phase === 'waiting') {
-      this.phase = 'live';
-      this.endsAt = Date.now() + MATCH_MS;
-    }
+    if (this.leaderId === null) this.leaderId = id;
     this.startLoop();
 
     ws.send(JSON.stringify({
-      t: 'welcome', id, team, endsAt: this.endsAt, spawn,
-      scores: this.scores,
+      t: 'welcome', id, team, phase: this.phase, leader: this.leaderId,
+      endsAt: this.endsAt, scores: this.scores, roster: this.roster(),
       players: [...this.clients.entries()]
         .filter(([pid]) => pid !== id)
-        .map(([pid, c]) => ({
-          id: pid, name: c.name, team: c.team, alive: c.alive,
-          kills: c.kills, deaths: c.deaths, p: c.p, yaw: c.yaw,
-        })),
+        .map(([pid, c]) => ({ id: pid, name: c.name, team: c.team, alive: c.alive, p: c.p, yaw: c.yaw })),
     }));
     this.broadcast({ t: 'joined', id, name, team }, id);
-    this.sendScores();
+    this.sendRoster();
     return id;
   }
 
   leave(id) {
     if (!this.clients.has(id)) return;
     this.clients.delete(id);
+    if (this.leaderId === id) {
+      this.leaderId = this.clients.size ? this.clients.keys().next().value : null;
+    }
     this.broadcast({ t: 'left', id });
-    this.sendScores();
+    this.sendRoster();
     if (this.clients.size === 0) this.stopLoop();
   }
 
@@ -151,14 +166,16 @@ export class Room {
     if (!c) return;
     switch (msg.t) {
       case 'state':
+        if (this.phase !== 'live' || c.team === 'spec') return;
         if (!Array.isArray(msg.p) || msg.p.length !== 3 || msg.p.some((v) => typeof v !== 'number' || !isFinite(v))) return;
         c.p = msg.p;
         c.yaw = +msg.yaw || 0;
         c.pitch = +msg.pitch || 0;
         c.crouch = !!msg.crouch;
-        if (msg.weapon) c.weapon = msg.weapon;
+        if (typeof msg.weapon === 'string') c.weapon = msg.weapon;
         break;
       case 'fire':
+        if (this.phase !== 'live' || c.team === 'spec') return;
         this.broadcast({ t: 'shot', id, o: msg.o, e: msg.e }, id);
         break;
       case 'hit':
@@ -167,7 +184,43 @@ export class Room {
       case 'respawn':
         this.respawn(id, msg.weapon);
         break;
+      case 'switchTeam':
+        this.switchTeam(id, msg.team);
+        break;
+      case 'start':
+        this.startMatch(id, msg.matchMs);
+        break;
     }
+  }
+
+  switchTeam(id, team) {
+    const c = this.clients.get(id);
+    if (!c || this.phase !== 'lobby') return;
+    if (!['red', 'blue', 'spec'].includes(team) || c.team === team) return;
+    const cap = team === 'spec' ? SPEC_CAP : TEAM_CAP;
+    if (this.count(team) >= cap) return;
+    c.team = team;
+    this.sendRoster();
+  }
+
+  startMatch(id, matchMs) {
+    if (id !== this.leaderId || this.phase !== 'lobby') return;
+    const fighters = [...this.clients.values()].filter((c) => c.team !== 'spec').length;
+    if (fighters < 1) return;
+    if (this.lobbyTimer) { clearTimeout(this.lobbyTimer); this.lobbyTimer = null; }
+
+    this.phase = 'live';
+    const ms = Math.min(MATCH_MS_DEFAULT, Math.max(MATCH_MS_MIN, +matchMs || MATCH_MS_DEFAULT));
+    this.endsAt = Date.now() + ms;
+    this.scores = { red: 0, blue: 0 };
+    for (const c of this.clients.values()) {
+      c.kills = 0;
+      c.deaths = 0;
+      c.alive = false; // everyone re-picks a weapon and respawns
+      c.health = 100;
+    }
+    this.broadcast({ t: 'start', endsAt: this.endsAt });
+    this.sendRoster();
   }
 
   applyHit(attackerId, msg) {
@@ -175,6 +228,7 @@ export class Room {
     const attacker = this.clients.get(attackerId);
     const victim = this.clients.get(msg.target);
     if (!attacker || !victim || !attacker.alive || !victim.alive) return;
+    if (attacker.team === 'spec' || victim.team === 'spec') return;
     if (attacker.team === victim.team) return; // no friendly fire
     const damage = Math.min(MAX_HIT_DAMAGE, Math.max(1, Math.round(+msg.damage || 0)));
 
@@ -200,10 +254,10 @@ export class Room {
 
   respawn(id, weapon) {
     const c = this.clients.get(id);
-    if (!c || c.alive) return;
+    if (!c || c.alive || this.phase !== 'live' || c.team === 'spec') return;
     c.alive = true;
     c.health = 100;
-    if (weapon) c.weapon = weapon;
+    if (typeof weapon === 'string') c.weapon = weapon;
     const spawn = this.pickSpawn(c.team, id);
     c.p = [spawn.pos.x, spawn.pos.y, spawn.pos.z];
     this.broadcast({ t: 'respawned', id, spawn, health: 100 });
@@ -221,51 +275,59 @@ export class Room {
 
   stopLoop() {
     if (this.interval) { clearInterval(this.interval); this.interval = null; }
-    if (this.resetTimer) { clearTimeout(this.resetTimer); this.resetTimer = null; }
-    this.phase = 'waiting';
+    if (this.lobbyTimer) { clearTimeout(this.lobbyTimer); this.lobbyTimer = null; }
+    this.phase = 'lobby';
+    this.endsAt = 0;
     this.scores = { red: 0, blue: 0 };
+    this.leaderId = null;
   }
 
   tick() {
     if (this.phase === 'live' && Date.now() >= this.endsAt) {
       this.phase = 'over';
-      this.broadcast({ t: 'over', scores: this.scores, board: this.board() });
-      this.resetTimer = setTimeout(() => this.resetMatch(), RESET_DELAY_MS);
+      this.broadcast({ t: 'over', scores: this.scores, board: this.boardPlayers() });
+      this.lobbyTimer = setTimeout(() => this.toLobby(), LOBBY_RETURN_MS);
     }
+    if (this.phase !== 'live') return;
     const players = [];
     for (const [id, c] of this.clients) {
+      if (c.team === 'spec') continue;
       players.push({ id, p: c.p, yaw: c.yaw, pitch: c.pitch, crouch: c.crouch, alive: c.alive, weapon: c.weapon });
     }
     this.broadcast({ t: 'snap', players });
   }
 
-  resetMatch() {
-    this.resetTimer = null;
-    this.scores = { red: 0, blue: 0 };
-    this.phase = 'live';
-    this.endsAt = Date.now() + MATCH_MS;
-    const spawns = {};
-    for (const [id, c] of this.clients) {
-      c.alive = true;
+  toLobby() {
+    this.lobbyTimer = null;
+    this.phase = 'lobby';
+    this.endsAt = 0;
+    for (const c of this.clients.values()) {
+      c.alive = false;
       c.health = 100;
-      c.kills = 0;
-      c.deaths = 0;
-      const spawn = this.pickSpawn(c.team, id);
-      c.p = [spawn.pos.x, spawn.pos.y, spawn.pos.z];
-      spawns[id] = spawn;
     }
-    this.broadcast({ t: 'reset', endsAt: this.endsAt, spawns });
-    this.sendScores();
+    this.broadcast({ t: 'lobby', roster: this.roster(), leader: this.leaderId });
   }
 
-  board() {
-    return [...this.clients.entries()].map(([id, c]) => ({
-      id, name: c.name, team: c.team, kills: c.kills, deaths: c.deaths,
-    }));
+  roster() {
+    return {
+      phase: this.phase,
+      leader: this.leaderId,
+      players: [...this.clients.entries()].map(([id, c]) => ({
+        id, name: c.name, team: c.team, kills: c.kills, deaths: c.deaths, alive: c.alive,
+      })),
+    };
+  }
+
+  boardPlayers() {
+    return this.roster().players.filter((p) => p.team !== 'spec');
+  }
+
+  sendRoster() {
+    this.broadcast({ t: 'roster', ...this.roster() });
   }
 
   sendScores() {
-    this.broadcast({ t: 'scores', red: this.scores.red, blue: this.scores.blue, board: this.board() });
+    this.broadcast({ t: 'scores', red: this.scores.red, blue: this.scores.blue, board: this.boardPlayers() });
   }
 
   broadcast(msg, exceptId = null) {

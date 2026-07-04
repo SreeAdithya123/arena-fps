@@ -14,13 +14,16 @@ export class NetClient {
     this.id = null;
     this.team = null;
     this.code = null;
+    this.phase = 'lobby';
+    this.leader = null;
     this.endsAt = 0;
     this.scores = { red: 0, blue: 0 };
-    this.board = [];
+    this.board = []; // roster players incl. spectators and self
     this.remotes = new Map(); // id -> { name, team, alive, weapon, buf: [{t, p, yaw, pitch, crouch}] }
     this.handlers = {};
-    this.clockOffset = 0; // rough server-time alignment from snapshots
   }
+
+  get isLeader() { return this.id !== null && this.id === this.leader; }
 
   on(type, fn) {
     this.handlers[type] = fn;
@@ -76,8 +79,11 @@ export class NetClient {
   onWelcome(msg) {
     this.id = msg.id;
     this.team = msg.team;
+    this.phase = msg.phase;
+    this.leader = msg.leader;
     this.endsAt = msg.endsAt;
     this.scores = msg.scores;
+    this.board = msg.roster.players;
     for (const p of msg.players) {
       this.remotes.set(p.id, {
         name: p.name, team: p.team, alive: p.alive, weapon: 'ar',
@@ -102,8 +108,9 @@ export class NetClient {
         break;
       }
       case 'joined':
+        // everyone joins pre-spawn; snapshots flip alive once they pick a weapon
         this.remotes.set(msg.id, {
-          name: msg.name, team: msg.team, alive: true, weapon: 'ar',
+          name: msg.name, team: msg.team, alive: false, weapon: 'ar',
           buf: [],
         });
         this.emit('joined', msg);
@@ -112,17 +119,51 @@ export class NetClient {
         this.remotes.delete(msg.id);
         this.emit('left', msg);
         break;
-      case 'scores':
+      case 'scores': {
         this.scores = { red: msg.red, blue: msg.blue };
-        this.board = msg.board;
+        for (const p of msg.board) {
+          const b = this.board.find((x) => x.id === p.id);
+          if (b) { b.kills = p.kills; b.deaths = p.deaths; }
+        }
         this.emit('scores', msg);
         break;
-      case 'reset':
+      }
+      case 'roster':
+        this.applyRoster(msg);
+        this.emit('roster', msg);
+        break;
+      case 'start':
+        this.phase = 'live';
         this.endsAt = msg.endsAt;
-        this.emit('reset', msg);
+        this.scores = { red: 0, blue: 0 };
+        this.emit('start', msg);
+        break;
+      case 'over':
+        this.phase = 'over';
+        this.emit('over', msg);
+        break;
+      case 'lobby':
+        this.phase = 'lobby';
+        this.endsAt = 0;
+        this.applyRoster(msg.roster);
+        this.emit('lobby', msg);
         break;
       default:
         this.emit(msg.t, msg);
+    }
+  }
+
+  applyRoster(roster) {
+    this.leader = roster.leader;
+    if (roster.phase) this.phase = roster.phase;
+    this.board = roster.players;
+    for (const p of roster.players) {
+      if (p.id === this.id) {
+        this.team = p.team;
+      } else {
+        const r = this.remotes.get(p.id);
+        if (r) { r.team = p.team; r.name = p.name; }
+      }
     }
   }
 
@@ -151,6 +192,14 @@ export class NetClient {
 
   sendRespawn(weapon) {
     this.send({ t: 'respawn', weapon });
+  }
+
+  sendSwitchTeam(team) {
+    this.send({ t: 'switchTeam', team });
+  }
+
+  sendStart(matchMs = null) {
+    this.send(matchMs ? { t: 'start', matchMs } : { t: 'start' });
   }
 
   disconnect() {
@@ -208,7 +257,7 @@ export function resolveRemoteHit(ev, net) {
   let best = null, tBest = tWorld, headshot = false;
   const now = performance.now();
   for (const [id, r] of net.remotes) {
-    if (!r.alive || r.team === net.team) continue;
+    if (!r.alive || r.team === 'spec' || r.team === net.team) continue;
     const s = net.sampleRemote(id, now);
     if (!s) continue;
     const [x, y, z] = s.p;

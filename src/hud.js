@@ -26,6 +26,11 @@ export class Hud {
           <div class="m m3"></div><div class="m m4"></div>
         </div>
         <div id="fps"></div>
+        <div id="spectate-bar" class="hidden">
+          <div class="spec-title">SPECTATING</div>
+          <div class="spec-name" id="spec-name">FREE CAMERA</div>
+          <div class="spec-hint">LMB next player &nbsp;·&nbsp; RMB previous &nbsp;·&nbsp; F free camera</div>
+        </div>
         <div id="match-top" class="hidden">
           <span id="score-red">0</span>
           <span id="match-timer">10:00</span>
@@ -80,19 +85,52 @@ export class Hud {
         </div>
       </div>
 
+      <div id="lobby-overlay" class="overlay hidden">
+        <div class="room-line">ROOM <b id="lobby-code"></b>
+          <button class="mini-btn" id="btn-copy-code">COPY CODE</button>
+          <button class="mini-btn" id="btn-copy-link">COPY LINK</button>
+        </div>
+        <h1>L<span class="accent">O</span>BBY</h1>
+        <div class="sub" id="lobby-sub">TEAM DEATHMATCH — 10 MINUTES</div>
+        <div class="lobby-cols">
+          <div class="lteam red-team">
+            <h3>RED <span id="red-count"></span></h3>
+            <div class="lroster" id="lobby-red"></div>
+            <button class="join-btn" data-team="red">JOIN RED</button>
+          </div>
+          <div class="lteam spec-team">
+            <h3>SPECTATORS</h3>
+            <div class="lroster" id="lobby-spec"></div>
+            <button class="join-btn" data-team="spec">SPECTATE</button>
+          </div>
+          <div class="lteam blue-team">
+            <h3>BLUE <span id="blue-count"></span></h3>
+            <div class="lroster" id="lobby-blue"></div>
+            <button class="join-btn" data-team="blue">JOIN BLUE</button>
+          </div>
+        </div>
+        <div class="lobby-actions">
+          <button class="big-btn" id="btn-start">START MATCH</button>
+          <div id="lobby-wait" class="hidden">waiting for the leader to start the match…</div>
+          <button class="back-btn" id="btn-leave-lobby">&larr; LEAVE ROOM</button>
+        </div>
+      </div>
+
       <div id="loadout-overlay" class="overlay hidden">
         <div class="died hidden" id="died-line">YOU WERE DROPPED</div>
-        <div class="room-line hidden" id="room-line">ROOM CODE <b id="room-code"></b> — SHARE IT WITH FRIENDS — TEAM <b id="team-name"></b></div>
+        <div class="room-line hidden" id="room-line">ROOM <b id="room-code"></b> — TEAM <b id="team-name"></b></div>
         <h1>DEP<span class="accent">O</span>T</h1>
         <div class="sub">PICK YOUR WEAPON</div>
         <div class="cards" id="cards"></div>
         <div class="hint">WASD move &nbsp;·&nbsp; SHIFT sprint &nbsp;·&nbsp; C crouch &nbsp;·&nbsp; SPACE jump<br>
         LMB fire &nbsp;·&nbsp; RMB scope &nbsp;·&nbsp; R reload &nbsp;·&nbsp; TAB scoreboard</div>
+        <button class="back-btn" id="btn-loadout-back">&larr; BACK</button>
       </div>
 
       <div id="resume-overlay" class="overlay hidden">
         <h1>PAUSED</h1>
         <div class="sub">CLICK TO RESUME</div>
+        <button class="back-btn" id="btn-pause-leave">&larr; LEAVE GAME</button>
       </div>
     `);
 
@@ -124,7 +162,21 @@ export class Hud {
       roomCodeTag: $('room-code-tag'),
       teamName: $('team-name'),
       cards: $('cards'),
+      loadoutBack: $('btn-loadout-back'),
       resume: $('resume-overlay'),
+      pauseLeave: $('btn-pause-leave'),
+      lobby: $('lobby-overlay'),
+      lobbyCode: $('lobby-code'),
+      lobbySub: $('lobby-sub'),
+      lobbyRed: $('lobby-red'),
+      lobbyBlue: $('lobby-blue'),
+      lobbySpec: $('lobby-spec'),
+      redCount: $('red-count'),
+      blueCount: $('blue-count'),
+      btnStart: $('btn-start'),
+      lobbyWait: $('lobby-wait'),
+      spectateBar: $('spectate-bar'),
+      specName: $('spec-name'),
       matchTop: $('match-top'),
       timer: $('match-timer'),
       scoreRed: $('score-red'),
@@ -191,7 +243,7 @@ export class Hud {
   hideFriends() { this.el.friends.classList.add('hidden'); }
   setFriendsStatus(text) { this.el.friendsStatus.textContent = text; }
 
-  showLoadout(died, onPick, room = null) {
+  showLoadout(died, onPick, room = null, onBack = null) {
     this.onPick = onPick;
     this.el.diedLine.classList.toggle('hidden', !died);
     this.el.roomLine.classList.toggle('hidden', !room);
@@ -200,15 +252,80 @@ export class Hud {
       this.el.teamName.textContent = room.team.toUpperCase();
       this.el.teamName.style.color = room.team === 'red' ? '#ff6a55' : '#5f9dff';
     }
+    this.el.loadoutBack.classList.toggle('hidden', !onBack);
+    this.el.loadoutBack.onclick = onBack;
     this.el.loadout.classList.remove('hidden');
   }
   hideLoadout() { this.el.loadout.classList.add('hidden'); }
 
-  showResume(onClick) {
+  showResume(onClick, onLeave = null) {
     this.el.resume.classList.remove('hidden');
     this.el.resume.onclick = onClick;
+    this.el.pauseLeave.classList.toggle('hidden', !onLeave);
+    this.el.pauseLeave.onclick = (e) => {
+      e.stopPropagation(); // don't trigger the resume click underneath
+      if (onLeave) onLeave();
+    };
   }
   hideResume() { this.el.resume.classList.add('hidden'); }
+
+  // ---------- lobby ----------
+  showLobby(code, { onSwitch, onStart, onLeave, link }) {
+    this.el.lobby.classList.remove('hidden');
+    this.el.lobbyCode.textContent = code;
+    for (const btn of this.el.lobby.querySelectorAll('.join-btn')) {
+      btn.onclick = () => onSwitch(btn.dataset.team);
+    }
+    this.el.btnStart.onclick = onStart;
+    document.getElementById('btn-leave-lobby').onclick = onLeave;
+    document.getElementById('btn-copy-code').onclick = (e) => {
+      navigator.clipboard.writeText(code);
+      e.target.textContent = 'COPIED!';
+      setTimeout(() => { e.target.textContent = 'COPY CODE'; }, 1200);
+    };
+    document.getElementById('btn-copy-link').onclick = (e) => {
+      navigator.clipboard.writeText(link);
+      e.target.textContent = 'COPIED!';
+      setTimeout(() => { e.target.textContent = 'COPY LINK'; }, 1200);
+    };
+  }
+  hideLobby() { this.el.lobby.classList.add('hidden'); }
+
+  updateLobby(roster, myId, myTeam) {
+    const row = (p) => `
+      <div class="lrow${p.id === myId ? ' me' : ''}">
+        <span>${p.id === roster.leader ? '<b class="crown">★</b> ' : ''}${p.name}</span>
+      </div>`;
+    const team = (t) => roster.players.filter((p) => p.team === t);
+    this.el.lobbyRed.innerHTML = team('red').map(row).join('') || '<div class="lempty">empty</div>';
+    this.el.lobbyBlue.innerHTML = team('blue').map(row).join('') || '<div class="lempty">empty</div>';
+    this.el.lobbySpec.innerHTML = team('spec').map(row).join('') || '<div class="lempty">none</div>';
+    this.el.redCount.textContent = `${team('red').length}/6`;
+    this.el.blueCount.textContent = `${team('blue').length}/6`;
+    for (const btn of this.el.lobby.querySelectorAll('.join-btn')) {
+      const t = btn.dataset.team;
+      const cap = t === 'spec' ? 6 : 6;
+      btn.disabled = t === myTeam || team(t).length >= cap;
+      btn.classList.toggle('current', t === myTeam);
+      btn.textContent = t === myTeam
+        ? (t === 'spec' ? 'SPECTATING' : `ON ${t.toUpperCase()}`)
+        : (t === 'spec' ? 'SPECTATE' : `JOIN ${t.toUpperCase()}`);
+    }
+    const iAmLeader = myId === roster.leader;
+    const fighters = roster.players.filter((p) => p.team !== 'spec').length;
+    this.el.btnStart.classList.toggle('hidden', !iAmLeader);
+    this.el.btnStart.disabled = fighters < 1;
+    this.el.lobbyWait.classList.toggle('hidden', iAmLeader);
+    this.el.lobbySub.textContent =
+      `TEAM DEATHMATCH — 10 MINUTES — ${fighters} PLAYER${fighters === 1 ? '' : 'S'} READY`;
+  }
+
+  // ---------- spectate ----------
+  setSpectate(active, targetName = null) {
+    this.el.hud.classList.toggle('spectating', active);
+    this.el.spectateBar.classList.toggle('hidden', !active);
+    if (active) this.el.specName.textContent = targetName || 'FREE CAMERA';
+  }
 
   // ---------- match UI ----------
   showMatchUI(code) {
