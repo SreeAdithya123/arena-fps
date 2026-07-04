@@ -4,9 +4,15 @@ Original browser arena shooter (Vyoman project). One industrial-depot arena,
 three hitscan weapons with right-click ADS, and two modes:
 
 - **Play with Bots** — solo warm-up against 5 bots that patrol and shoot back.
-- **Play with Friends** — 6v6 team deathmatch rooms. Create a room, share the
-  5-letter code, friends join, 10-minute matches with team scores, kill feed,
-  and a Tab scoreboard. Auto-balanced red/blue teams, no friendly fire.
+- **Play with Friends** — 6v6 team deathmatch rooms. Create a room and you land
+  in a lobby: share the 5-letter code (or copy a deep link), switch between
+  red / blue / spectators, and the room leader (★, migrates on leave) starts
+  the match. 10-minute matches with team scores, kill feed, and a Tab
+  scoreboard, then everyone returns to the lobby for a leader-driven rematch.
+  Spectators watch with a follow camera (LMB/RMB cycles players) or a free
+  camera (F). No friendly fire.
+
+**Live at: https://arena-fps.sreeadithya-ndd.workers.dev**
 
 ## Play locally
 
@@ -61,7 +67,8 @@ untouched — a fully authoritative server remains possible later.
 
 ```
 npm run test        # 22 headless sim checks (movement, weapons, ADS, bots, determinism)
-npm run test:net    # 18 room protocol checks (needs wrangler dev running)
+npm run test:net    # 25 room protocol checks: lobby, teams, leader, combat,
+                    # spectators, over->lobby->rematch (needs wrangler dev; ~40s)
 node test/net.js https://your-deployment.workers.dev   # same, against prod
 ```
 
