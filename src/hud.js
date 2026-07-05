@@ -3,11 +3,15 @@
 // passively; reacts to events via explicit calls from main.
 
 import { WEAPONS } from './sim/weapons.js';
+import { MAP_LIST } from './sim/maps/index.js';
+import { CROSSHAIRS, ACCENTS } from './progress.js';
 
 const WEAPON_META = {
-  ar: { type: 'Assault Rifle', dmg: 0.55, rate: 0.75, range: 0.65 },
-  dmr: { type: 'Marksman Rifle', dmg: 1.0, rate: 0.3, range: 1.0 },
+  ar: { type: 'Assault Rifle', dmg: 0.5, rate: 0.75, range: 0.65 },
+  dmr: { type: 'Marksman Rifle', dmg: 0.75, rate: 0.3, range: 0.9 },
   smg: { type: 'Submachine Gun', dmg: 0.3, rate: 1.0, range: 0.4 },
+  shotgun: { type: 'Shotgun', dmg: 0.95, rate: 0.2, range: 0.15 },
+  sniper: { type: 'Bolt Sniper', dmg: 1.0, rate: 0.12, range: 1.0 },
 };
 
 export class Hud {
@@ -16,9 +20,10 @@ export class Hud {
       <div id="hud">
         <div id="damage-vignette"></div>
         <div id="scope-overlay" class="hidden"><div class="ring"></div><div class="cross-h"></div><div class="cross-v"></div></div>
-        <div id="crosshair">
+        <div id="crosshair" class="ch-cross">
           <div class="l h left"></div><div class="l h right"></div>
           <div class="l v up"></div><div class="l v down"></div>
+          <div class="ring"></div>
           <div class="dot"></div>
         </div>
         <div id="hitmarker">
@@ -64,6 +69,15 @@ export class Hud {
           <button class="mode-btn" id="btn-bots">PLAY WITH BOTS<span>solo warm-up against 5 bots</span></button>
           <button class="mode-btn" id="btn-friends">PLAY WITH FRIENDS<span>6v6 team rooms with a share code</span></button>
         </div>
+        <button class="back-btn" id="btn-stats" style="margin-top:22px">STATS &amp; STYLE</button>
+      </div>
+
+      <div id="stats-overlay" class="overlay hidden">
+        <h1>STATS <span class="accent">&amp;</span> STYLE</h1>
+        <div class="sub" id="stats-line"></div>
+        <div class="unlock-sec"><h3>CROSSHAIR</h3><div class="unlock-row" id="row-crosshair"></div></div>
+        <div class="unlock-sec"><h3>ACCENT COLOR <span class="unlock-note">(your crosshair, HUD and weapon trim — team colors never change)</span></h3><div class="unlock-row" id="row-accent"></div></div>
+        <button class="back-btn" id="btn-stats-back">&larr; BACK</button>
       </div>
 
       <div id="friends-overlay" class="overlay hidden">
@@ -92,6 +106,7 @@ export class Hud {
         </div>
         <h1>L<span class="accent">O</span>BBY</h1>
         <div class="sub" id="lobby-sub">TEAM DEATHMATCH — 10 MINUTES</div>
+        <div class="map-row" id="map-row"></div>
         <div class="lobby-cols">
           <div class="lteam red-team">
             <h3>RED <span id="red-count"></span></h3>
@@ -110,8 +125,9 @@ export class Hud {
           </div>
         </div>
         <div class="lobby-actions">
+          <button class="big-btn ready-btn" id="btn-ready">READY</button>
           <button class="big-btn" id="btn-start">START MATCH</button>
-          <div id="lobby-wait" class="hidden">waiting for the leader to start the match…</div>
+          <div id="lobby-wait" class="hidden"></div>
           <button class="back-btn" id="btn-leave-lobby">&larr; LEAVE ROOM</button>
         </div>
       </div>
@@ -174,6 +190,8 @@ export class Hud {
       redCount: $('red-count'),
       blueCount: $('blue-count'),
       btnStart: $('btn-start'),
+      btnReady: $('btn-ready'),
+      mapRow: $('map-row'),
       lobbyWait: $('lobby-wait'),
       spectateBar: $('spectate-bar'),
       specName: $('spec-name'),
@@ -217,12 +235,50 @@ export class Hud {
   }
 
   // ---------- menu flow ----------
-  showMenu(onBots, onFriends) {
+  showMenu(onBots, onFriends, onStats = null) {
     this.el.menu.classList.remove('hidden');
     document.getElementById('btn-bots').onclick = onBots;
     document.getElementById('btn-friends').onclick = onFriends;
+    document.getElementById('btn-stats').onclick = onStats;
   }
   hideMenu() { this.el.menu.classList.add('hidden'); }
+
+  // ---------- stats & cosmetics ----------
+  showStats(progress) {
+    const ov = document.getElementById('stats-overlay');
+    this.el.menu.classList.add('hidden');
+    ov.classList.remove('hidden');
+    const render = () => {
+      const s = progress.session, d = progress.data;
+      document.getElementById('stats-line').textContent =
+        `THIS SESSION: ${s.kills} KILLS — ${s.deaths} DEATHS — ${s.wins} WINS · LIFETIME: ${d.lifeKills} KILLS, ${d.lifeWins} WINS`;
+      const row = (items, selectedId, kind) => items.map((it) => {
+        const locked = !progress.unlocked(it);
+        const sel = it.id === selectedId;
+        const swatch = it.color ? `<i class="swatch" style="background:${it.color}"></i>` : '';
+        return `<button class="unlock-chip${sel ? ' sel' : ''}${locked ? ' locked' : ''}" data-kind="${kind}" data-id="${it.id}" ${locked ? 'disabled' : ''}>
+          ${swatch}${it.name}${locked ? `<span>${it.unlock} KILLS</span>` : ''}</button>`;
+      }).join('');
+      document.getElementById('row-crosshair').innerHTML = row(CROSSHAIRS, d.crosshair, 'crosshair');
+      document.getElementById('row-accent').innerHTML = row(ACCENTS, d.accent, 'accent');
+      for (const chip of ov.querySelectorAll('.unlock-chip:not(.locked)')) {
+        chip.onclick = () => {
+          if (chip.dataset.kind === 'crosshair') progress.setCrosshair(chip.dataset.id);
+          else progress.setAccent(chip.dataset.id);
+          render();
+        };
+      }
+    };
+    render();
+    document.getElementById('btn-stats-back').onclick = () => {
+      ov.classList.add('hidden');
+      this.el.menu.classList.remove('hidden');
+    };
+  }
+
+  setCrosshairStyle(id) {
+    this.el.crosshair.className = `ch-${id}`;
+  }
 
   showFriends({ onCreate, onJoin, onBack }) {
     this.el.friends.classList.remove('hidden');
@@ -270,13 +326,23 @@ export class Hud {
   hideResume() { this.el.resume.classList.add('hidden'); }
 
   // ---------- lobby ----------
-  showLobby(code, { onSwitch, onStart, onLeave, link }) {
+  showLobby(code, { onSwitch, onStart, onReady, onMap, onLeave, link }) {
     this.el.lobby.classList.remove('hidden');
     this.el.lobbyCode.textContent = code;
+    this.myReady = false;
     for (const btn of this.el.lobby.querySelectorAll('.join-btn')) {
       btn.onclick = () => onSwitch(btn.dataset.team);
     }
     this.el.btnStart.onclick = onStart;
+    this.el.btnReady.onclick = () => onReady(!this.myReady);
+    this.el.mapRow.innerHTML = MAP_LIST.map((m) => `
+      <div class="map-card" data-map="${m.id}" style="background-image:url('/thumbs/${m.id}.jpg')">
+        <div class="map-name">${m.name}</div>
+        <div class="map-tag">${m.tagline}</div>
+      </div>`).join('');
+    for (const card of this.el.mapRow.querySelectorAll('.map-card')) {
+      card.onclick = () => onMap(card.dataset.map);
+    }
     document.getElementById('btn-leave-lobby').onclick = onLeave;
     document.getElementById('btn-copy-code').onclick = (e) => {
       navigator.clipboard.writeText(code);
@@ -295,6 +361,7 @@ export class Hud {
     const row = (p) => `
       <div class="lrow${p.id === myId ? ' me' : ''}">
         <span>${p.id === roster.leader ? '<b class="crown">★</b> ' : ''}${p.name}</span>
+        <span class="rdy${p.ready || p.id === roster.leader ? ' on' : ''}">${p.id === roster.leader ? 'LEAD' : p.ready ? 'RDY' : ''}</span>
       </div>`;
     const team = (t) => roster.players.filter((p) => p.team === t);
     this.el.lobbyRed.innerHTML = team('red').map(row).join('') || '<div class="lempty">empty</div>';
@@ -304,20 +371,40 @@ export class Hud {
     this.el.blueCount.textContent = `${team('blue').length}/6`;
     for (const btn of this.el.lobby.querySelectorAll('.join-btn')) {
       const t = btn.dataset.team;
-      const cap = t === 'spec' ? 6 : 6;
-      btn.disabled = t === myTeam || team(t).length >= cap;
+      btn.disabled = t === myTeam || team(t).length >= 6;
       btn.classList.toggle('current', t === myTeam);
       btn.textContent = t === myTeam
         ? (t === 'spec' ? 'SPECTATING' : `ON ${t.toUpperCase()}`)
         : (t === 'spec' ? 'SPECTATE' : `JOIN ${t.toUpperCase()}`);
     }
+
     const iAmLeader = myId === roster.leader;
-    const fighters = roster.players.filter((p) => p.team !== 'spec').length;
+    const me = roster.players.find((p) => p.id === myId);
+    this.myReady = !!(me && me.ready);
+    const fighters = roster.players.filter((p) => p.team !== 'spec');
+    const waitingOn = fighters.filter((p) => p.id !== roster.leader && !p.ready);
+
+    // map selector: everyone sees the pick, only the leader can change it
+    for (const card of this.el.mapRow.querySelectorAll('.map-card')) {
+      card.classList.toggle('selected', card.dataset.map === roster.mapId);
+      card.classList.toggle('locked', !iAmLeader);
+    }
+
+    // ready button: fighters who aren't the leader
+    const showReady = !iAmLeader && myTeam !== 'spec';
+    this.el.btnReady.classList.toggle('hidden', !showReady);
+    this.el.btnReady.textContent = this.myReady ? 'UNREADY' : 'READY';
+    this.el.btnReady.classList.toggle('is-ready', this.myReady);
+
     this.el.btnStart.classList.toggle('hidden', !iAmLeader);
-    this.el.btnStart.disabled = fighters < 1;
-    this.el.lobbyWait.classList.toggle('hidden', iAmLeader);
+    this.el.btnStart.disabled = fighters.length < 1 || waitingOn.length > 0;
+
+    this.el.lobbyWait.classList.remove('hidden');
+    this.el.lobbyWait.textContent = iAmLeader
+      ? (waitingOn.length ? `waiting for ${waitingOn.map((p) => p.name).join(', ')} to ready up` : '')
+      : (myTeam === 'spec' || this.myReady ? 'waiting for the leader to start the match…' : 'press READY when you are set');
     this.el.lobbySub.textContent =
-      `TEAM DEATHMATCH — 10 MINUTES — ${fighters} PLAYER${fighters === 1 ? '' : 'S'} READY`;
+      `TEAM DEATHMATCH — 10 MINUTES — ${fighters.length} PLAYER${fighters.length === 1 ? '' : 'S'}`;
   }
 
   // ---------- spectate ----------

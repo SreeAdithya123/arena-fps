@@ -1,85 +1,76 @@
 # DEPOT — browser arena FPS
 
-Original browser arena shooter (Vyoman project). One industrial-depot arena,
-three hitscan weapons with right-click ADS, and two modes:
-
-- **Play with Bots** — solo warm-up against 5 bots that patrol and shoot back.
-- **Play with Friends** — 6v6 team deathmatch rooms. Create a room and you land
-  in a lobby: share the 5-letter code (or copy a deep link), switch between
-  red / blue / spectators, and the room leader (★, migrates on leave) starts
-  the match. 10-minute matches with team scores, kill feed, and a Tab
-  scoreboard, then everyone returns to the lobby for a leader-driven rematch.
-  Spectators watch with a follow camera (LMB/RMB cycles players) or a free
-  camera (F). No friendly fire.
+Original browser arena shooter (Vyoman project). Three maps, five weapons,
+solo bots mode and 6v6 friend rooms — all original assets (procedural
+textures, primitive models, synthesized audio; see [CREDITS.md](CREDITS.md)
+and [ART_DIRECTION.md](ART_DIRECTION.md)).
 
 **Live at: https://arena-fps.sreeadithya-ndd.workers.dev**
 
-## Play locally
+- **Play with Bots** — solo warm-up against 5 bots on DEPOT.
+- **Play with Friends** — create a room, share the 5-letter code (or copy a
+  deep link). The lobby has team columns (red / blue / spectators), a READY
+  toggle, and a leader-only START that unlocks when everyone is ready. The
+  leader picks the map from live thumbnails. 10-minute team deathmatch with
+  positional audio, kill feed, Tab scoreboard, then back to the lobby for a
+  rematch. Spectators get follow + free cameras. No friendly fire.
+- **Progression** — session stats plus lifetime kills stored locally; kill
+  milestones unlock crosshair styles and personal accent colors (your HUD,
+  crosshair, and weapon trim — enemy/teammate colors never change).
+
+## Maps
+
+| | Character |
+|---|---|
+| **DEPOT** | Mixed range — central platform, north walkway, lane screens |
+| **COMPOUND** | Close quarters — four-room building, hub pillar, ring corridor |
+| **PIPELINE** | Long lanes — walkable pipe spine, under-spine tunnels, spawn berms |
+
+All three are bot-tested in CI: patrol coverage, spawn walk-outs, and zero
+spawn-to-spawn sightlines are asserted headlessly.
+
+## Weapons (pick at spawn, RMB = ADS on all)
+
+| | Talon (AR) | Ridgeline (DMR) | Wasp (SMG) | Breaker (Shotgun) | Aurora (Sniper) |
+|---|---|---|---|---|---|
+| Fire | 600rpm auto | semi 0.34s | 900rpm auto | pump 0.85s | bolt 1.15s |
+| Damage | 26 (×1.8 HS) | 55 (×2.0) | 16 (×1.6) | 8×13 pellets (×1.4) | 105 (×2.0) |
+| Trait | recoil climb | 2-shot punch | falloff spray | falloff, 1-shot close | full scope, 1-shot body |
+
+## Run / deploy
 
 ```
 npm install
-npm run build
-npx wrangler dev --port 8787     # full stack (game + rooms) on :8787
+npm run build && npx wrangler dev --port 8787   # full stack on :8787
+npm run dev:worker & npm run dev                # or: HMR client on :5173
+npm run deploy                                  # Cloudflare (Worker + DO + assets)
 ```
 
-or for client development with hot reload:
-
-```
-npm run dev:worker    # rooms backend on :8787
-npm run dev           # vite on :5173, proxies /api + /ws to the worker
-```
-
-Controls: WASD move, Shift sprint, C crouch, Space jump, LMB fire,
-**RMB scope/ADS** (all weapons; the DMR gets a full scope), R reload,
-Tab scoreboard.
-
-## Deploy (Cloudflare)
-
-```
-npx wrangler login    # once
-npm run deploy
-```
-
-One Worker serves the static build and hosts rooms as Durable Objects
-(SQLite-backed, works on the free plan). Each room code = one DO instance.
+Controls: WASD, Shift sprint, C crouch, Space jump, LMB fire, RMB scope,
+R reload, T inspect, Tab scoreboard.
 
 ## Architecture
 
 ```
-src/sim/     pure simulation. Zero three.js/DOM imports, fixed 60Hz tick,
-             seeded RNG, command-in/events-out. Runs headless in Node
-             (test/headless.js) and replays deterministically.
-src/render/  three.js presentation: arena meshes from the sim's box list,
-             viewmodels, remote player rendering, tracers, synth audio.
-src/net.js   friend-room client: WebSocket, snapshot interpolation (120ms),
-             shooter-side hit detection against remote hulls.
-server/      Cloudflare Worker + Room Durable Object: teams, health, kills,
-             scores, 10-minute timer, snapshot relay at 20Hz.
-src/main.js  fixed-timestep loop + mode state machine (menu/bots/friends).
+src/sim/       pure deterministic sim (no DOM/three.js), 60Hz, seeded RNG.
+src/sim/maps/  map data: boxes, spawns, linked bot-patrol graphs, env.
+src/render/    three.js: merged per-material arena meshes (~6 draws/map),
+               baked static shadow map + blob shadows, soldiers, viewmodels,
+               pooled tracers/impacts/decals, synthesized positional audio.
+server/        Cloudflare Worker + Room Durable Object: lobby/live/over
+               lifecycle, teams, ready gate, map select, per-weapon damage
+               clamps, 20Hz snapshots, 10-minute timer.
 ```
 
-Rooms are client-authoritative for movement and shooter-side hit detection
-(friends-scale trust model); the server owns health/kills/scores/timer and
-validates damage, teams, and lifecycles. The deterministic sim seam is
-untouched — a fully authoritative server remains possible later.
+Perf (measured, 12-player match on DEPOT at 1920×1080): render 2.8ms/frame,
+sim+net tick 0.11ms — ~18% of the 60fps budget; server snapshots hold 20Hz.
 
 ## Tests
 
 ```
-npm run test        # 22 headless sim checks (movement, weapons, ADS, bots, determinism)
-npm run test:net    # 25 room protocol checks: lobby, teams, leader, combat,
-                    # spectators, over->lobby->rematch (needs wrangler dev; ~40s)
-node test/net.js https://your-deployment.workers.dev   # same, against prod
+npm run test       # 36 headless checks: sim, weapons, ADS, determinism,
+                   # per-map bot flow + spawn safety
+npm run test:net   # 31 protocol checks: lobby, ready gate, map select, combat,
+                   # spectators, clamps, over->lobby->rematch (needs wrangler dev)
+node test/net.js https://arena-fps.sreeadithya-ndd.workers.dev   # against prod
 ```
-
-## Weapons
-
-| | VK-32 Talon (AR) | HR-9 Ridgeline (DMR) | MK-4 Wasp (SMG) |
-|---|---|---|---|
-| Fire | 600 rpm auto | semi, 0.34s | 900 rpm auto |
-| Damage (head ×) | 26 (×1.8) | 55 (×2.0) | 16 (×1.6) |
-| Mag | 30 | 12 | 36 |
-| ADS | 1.5× zoom | full scope | 1.36× zoom |
-
-All assets are original: procedural canvas textures, primitive-built guns,
-synthesized WebAudio SFX.

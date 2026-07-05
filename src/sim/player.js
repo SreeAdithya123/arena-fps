@@ -1,7 +1,7 @@
-// Player + shared AABB movement. Move-and-slide against arena boxes with
-// step-up so stair boxes read as stairs. Bots reuse slideMove.
+// Player + shared AABB movement. Move-and-slide against the map's boxes with
+// step-up so stair boxes read as stairs. Bots reuse slideMove. The map is an
+// explicit argument everywhere — no globals, sim stays pure.
 
-import { ARENA } from './arena.js';
 import { clamp, aabbOverlap, EPS } from './math.js';
 
 const GRAVITY = 24;
@@ -33,6 +33,7 @@ export function makePlayer() {
     sprinting: false,
     aiming: false,
     moveFrac: 0, // 0..1 of sprint speed, feeds weapon spread
+    stepPhase: 0, // walk-cycle accumulator, drives footstep sounds render-side
   };
 }
 
@@ -47,20 +48,20 @@ function bodyAABB(b) {
   };
 }
 
-function overlapsAny(b) {
+function overlapsAny(b, map) {
   const { min, max } = bodyAABB(b);
-  for (const box of ARENA.boxes) {
+  for (const box of map.boxes) {
     if (aabbOverlap(min, max, box.min, box.max)) return true;
   }
   return false;
 }
 
 // Translate along one axis, clamping out of any box hit. Returns true if blocked.
-function collideAxis(b, axis, delta) {
+function collideAxis(b, map, axis, delta) {
   if (delta === 0) return false;
   b.pos[axis] += delta;
   let hit = false;
-  for (const box of ARENA.boxes) {
+  for (const box of map.boxes) {
     const { min, max } = bodyAABB(b);
     if (!aabbOverlap(min, max, box.min, box.max)) continue;
     hit = true;
@@ -70,28 +71,28 @@ function collideAxis(b, axis, delta) {
   return hit;
 }
 
-function moveHorizontal(b, axis, delta) {
+function moveHorizontal(b, map, axis, delta) {
   const saved = { ...b.pos };
-  const blocked = collideAxis(b, axis, delta);
+  const blocked = collideAxis(b, map, axis, delta);
   if (!blocked || !b.onGround) return;
   // Step-up attempt: lift, redo the move, settle back down.
   const clamped = { ...b.pos };
   b.pos = { ...saved };
   b.pos.y += STEP_HEIGHT;
-  if (overlapsAny(b)) { b.pos = clamped; return; }
-  const stillBlocked = collideAxis(b, axis, delta);
-  collideAxis(b, 'y', -(STEP_HEIGHT + 0.01));
+  if (overlapsAny(b, map)) { b.pos = clamped; return; }
+  const stillBlocked = collideAxis(b, map, axis, delta);
+  collideAxis(b, map, 'y', -(STEP_HEIGHT + 0.01));
   if (stillBlocked && Math.abs(b.pos[axis] - saved[axis]) <= Math.abs(clamped[axis] - saved[axis])) {
     b.pos = clamped; // step gained nothing
   }
 }
 
 // Shared by player and bots. Mutates pos/vel/onGround.
-export function slideMove(b, dt) {
-  moveHorizontal(b, 'x', b.vel.x * dt);
-  moveHorizontal(b, 'z', b.vel.z * dt);
+export function slideMove(b, map, dt) {
+  moveHorizontal(b, map, 'x', b.vel.x * dt);
+  moveHorizontal(b, map, 'z', b.vel.z * dt);
   const dy = b.vel.y * dt;
-  const hitY = collideAxis(b, 'y', dy);
+  const hitY = collideAxis(b, map, 'y', dy);
   b.onGround = false;
   if (hitY) {
     if (dy < 0) b.onGround = true;
@@ -100,12 +101,12 @@ export function slideMove(b, dt) {
   if (!b.onGround && b.vel.y <= 0) {
     // ground probe just below the feet keeps onGround stable on flat floor
     b.pos.y -= 0.02;
-    if (overlapsAny(b)) { b.onGround = true; b.vel.y = 0; }
+    if (overlapsAny(b, map)) { b.onGround = true; b.vel.y = 0; }
     b.pos.y += 0.02;
   }
 }
 
-export function playerMove(p, cmd, dt) {
+export function playerMove(p, cmd, map, dt) {
   p.yaw = cmd.yaw;
   p.pitch = clamp(cmd.pitch, -1.55, 1.55);
 
@@ -115,7 +116,7 @@ export function playerMove(p, cmd, dt) {
     p.height = CROUCH_HEIGHT;
   } else if (!cmd.crouch && p.crouched) {
     p.height = STAND_HEIGHT;
-    if (overlapsAny(p)) p.height = CROUCH_HEIGHT;
+    if (overlapsAny(p, map)) p.height = CROUCH_HEIGHT;
     else p.crouched = false;
   }
 
@@ -149,6 +150,9 @@ export function playerMove(p, cmd, dt) {
   }
   p.vel.y = Math.max(-40, p.vel.y - GRAVITY * dt);
 
-  slideMove(p, dt);
-  p.moveFrac = clamp(Math.hypot(p.vel.x, p.vel.z) / (WALK_SPEED * SPRINT_MULT), 0, 1);
+  slideMove(p, map, dt);
+  const hSpeed = Math.hypot(p.vel.x, p.vel.z);
+  p.moveFrac = clamp(hSpeed / (WALK_SPEED * SPRINT_MULT), 0, 1);
+  // walk cycle: wraps ~every stride; footstep fires on the wrap (render-side)
+  p.stepPhase += p.onGround ? hSpeed * dt / 2.2 : 0;
 }

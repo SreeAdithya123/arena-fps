@@ -47,8 +47,42 @@ export class Effects {
     }
     this.impactIdx = 0;
 
+    // --- persistent bullet decals: small scorch sprites, ~8s life ---
+    const decalTex = (() => {
+      const c = document.createElement('canvas');
+      c.width = c.height = 32;
+      const ctx = c.getContext('2d');
+      const g = ctx.createRadialGradient(16, 16, 2, 16, 16, 14);
+      g.addColorStop(0, 'rgba(20,18,16,0.8)');
+      g.addColorStop(0.6, 'rgba(25,23,20,0.45)');
+      g.addColorStop(1, 'rgba(30,28,24,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, 32, 32);
+      return new THREE.CanvasTexture(c);
+    })();
+    this.decals = [];
+    for (let i = 0; i < 48; i++) {
+      const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: decalTex, transparent: true, depthWrite: false, opacity: 0,
+      }));
+      sprite.scale.set(0.22, 0.22, 1);
+      sprite.visible = false;
+      scene.add(sprite);
+      this.decals.push({ sprite, t: 0 });
+    }
+    this.decalIdx = 0;
+
     this.from = new THREE.Vector3();
     this.to = new THREE.Vector3();
+  }
+
+  decal(pos) {
+    const d = this.decals[this.decalIdx];
+    this.decalIdx = (this.decalIdx + 1) % this.decals.length;
+    d.sprite.position.set(pos.x, pos.y, pos.z);
+    d.sprite.material.opacity = 0.75;
+    d.sprite.visible = true;
+    d.t = 8;
   }
 
   tracer(from, to, hot = 1) {
@@ -105,6 +139,12 @@ export class Effects {
       im.sprite.material.opacity = f * 0.9;
       const s = im.sprite.scale.x + dt * 1.6;
       im.sprite.scale.set(s, s, 1);
+    }
+    for (const d of this.decals) {
+      if (!d.sprite.visible) continue;
+      d.t -= dt;
+      if (d.t <= 0) { d.sprite.visible = false; continue; }
+      if (d.t < 2) d.sprite.material.opacity = 0.75 * (d.t / 2);
     }
   }
 }

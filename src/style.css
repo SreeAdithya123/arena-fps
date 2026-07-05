@@ -1,4 +1,4 @@
-* { margin: 0; padding: 0; box-sizing: border-box; }
+﻿* { margin: 0; padding: 0; box-sizing: border-box; }
 
 html, body {
   width: 100%; height: 100%;
@@ -56,7 +56,7 @@ html, body {
   box-shadow: 0 0 3px rgba(0,0,0,0.9);
 }
 #hitmarker.kill .m { background: #ff5340; width: 12px; }
-#hitmarker.head .m { background: #ffcf40; }
+#hitmarker.head .m { background: var(--accent); }
 #hitmarker .m1 { transform: translate(4px, 4px) rotate(45deg); }
 #hitmarker .m2 { transform: translate(-12px, 4px) rotate(-45deg); }
 #hitmarker .m3 { transform: translate(4px, -5px) rotate(-45deg); }
@@ -75,7 +75,7 @@ html, body {
   animation: dmgfloat 0.7s ease-out forwards;
   transform: translate(-50%, -100%);
 }
-.dmgnum.head { color: #ffcf40; font-size: 21px; }
+.dmgnum.head { color: var(--accent); font-size: 21px; }
 @keyframes dmgfloat {
   0% { opacity: 1; margin-top: 0; }
   100% { opacity: 0; margin-top: -38px; }
@@ -113,7 +113,7 @@ html, body {
   font-size: 12px; letter-spacing: 2px; text-transform: uppercase;
   color: rgba(232,236,239,0.6); margin-top: 2px;
 }
-#ammo.reloading .mag { color: #ffcf40; }
+#ammo.reloading .mag { color: var(--accent); }
 
 #score {
   position: absolute; top: 20px; right: 26px;
@@ -153,7 +153,7 @@ html, body {
   font-size: 44px; font-weight: 800; letter-spacing: 10px;
   margin-bottom: 6px;
 }
-.overlay h1 .accent { color: #ffcf40; }
+.overlay h1 .accent { color: var(--accent); }
 .overlay .sub {
   font-size: 14px; color: rgba(232,236,239,0.6);
   margin-bottom: 36px; letter-spacing: 2px;
@@ -163,9 +163,9 @@ html, body {
   letter-spacing: 4px; margin-bottom: 24px;
 }
 
-.cards { display: flex; gap: 18px; }
+.cards { display: flex; gap: 14px; flex-wrap: wrap; justify-content: center; max-width: 1080px; }
 .card {
-  width: 210px; padding: 20px 18px;
+  width: 196px; padding: 18px 16px;
   background: rgba(20, 25, 31, 0.92);
   border: 1px solid rgba(255,255,255,0.14);
   border-radius: 8px;
@@ -174,12 +174,12 @@ html, body {
 }
 .card:hover {
   transform: translateY(-4px);
-  border-color: #ffcf40;
+  border-color: var(--accent);
 }
 .card .wtitle { font-size: 18px; font-weight: 700; margin-bottom: 2px; }
 .card .wtype {
   font-size: 11px; letter-spacing: 2px; text-transform: uppercase;
-  color: #ffcf40; margin-bottom: 10px;
+  color: var(--accent); margin-bottom: 10px;
 }
 .card .wdesc { font-size: 12.5px; color: rgba(232,236,239,0.7); line-height: 1.45; min-height: 54px; }
 .card .stat { margin-top: 8px; font-size: 11px; color: rgba(232,236,239,0.55); }
@@ -188,7 +188,7 @@ html, body {
   background: rgba(255,255,255,0.12);
   overflow: hidden;
 }
-.card .statbar i { display: block; height: 100%; background: #ffcf40; }
+.card .statbar i { display: block; height: 100%; background: var(--accent); }
 
 .overlay .hint {
   margin-top: 34px; font-size: 13px;
@@ -217,7 +217,7 @@ html, body {
   font-size: 12px; font-weight: 400;
   color: rgba(232,236,239,0.6); letter-spacing: 0.5px;
 }
-.mode-btn:hover { transform: translateY(-4px); border-color: #ffcf40; }
+.mode-btn:hover { transform: translateY(-4px); border-color: var(--accent); }
 
 .friends-box {
   display: flex; flex-direction: column; align-items: center; gap: 14px;
@@ -236,13 +236,13 @@ html, body {
   padding: 10px 12px; width: 220px;
   text-transform: uppercase;
 }
-.friends-box input:focus { outline: none; border-color: #ffcf40; }
+.friends-box input:focus { outline: none; border-color: var(--accent); }
 .friends-row { display: flex; align-items: center; gap: 18px; margin-top: 6px; }
 .friends-row .or { color: rgba(232,236,239,0.45); font-size: 13px; }
 .join-group { display: flex; gap: 8px; }
 #code-input { width: 100px; }
 .big-btn {
-  background: #ffcf40; border: none; border-radius: 5px;
+  background: var(--accent); border: none; border-radius: 5px;
   color: #14181d;
   font: 800 14px "Segoe UI", system-ui, sans-serif;
   letter-spacing: 1.5px;
@@ -262,7 +262,7 @@ html, body {
   font-size: 15px; letter-spacing: 1.5px; margin-bottom: 18px;
   color: rgba(232,236,239,0.85);
 }
-.room-line b { color: #ffcf40; letter-spacing: 4px; }
+.room-line b { color: var(--accent); letter-spacing: 4px; }
 
 /* ---------- match UI ---------- */
 #match-top {
@@ -280,7 +280,7 @@ html, body {
   font-size: 11px; letter-spacing: 2px; color: rgba(232,236,239,0.55);
   text-shadow: 0 1px 3px rgba(0,0,0,0.8);
 }
-#room-tag b { color: #ffcf40; letter-spacing: 3px; }
+#room-tag b { color: var(--accent); letter-spacing: 3px; }
 
 #killfeed {
   position: absolute; top: 54px; right: 26px;
@@ -306,22 +306,57 @@ html, body {
 #sb-red h3 { color: #ff6a55; }
 #sb-blue h3 { color: #5f9dff; }
 .sb-row { display: flex; justify-content: space-between; font-size: 13.5px; padding: 3px 6px; border-radius: 3px; }
-.sb-row.me { background: rgba(255, 207, 64, 0.12); }
-.sb-foot { text-align: center; margin-top: 14px; font-size: 13px; color: #ffcf40; letter-spacing: 1px; min-height: 16px; }
+.sb-row.me { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.sb-foot { text-align: center; margin-top: 14px; font-size: 13px; color: var(--accent); letter-spacing: 1px; min-height: 16px; }
 
 /* ---------- lobby ---------- */
 .mini-btn {
-  background: rgba(255, 207, 64, 0.14);
-  border: 1px solid rgba(255, 207, 64, 0.5);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent);
   border-radius: 4px;
-  color: #ffcf40;
+  color: var(--accent);
   font: 700 10.5px "Segoe UI", system-ui, sans-serif;
   letter-spacing: 1px;
   padding: 5px 10px; margin-left: 8px;
   cursor: pointer;
   vertical-align: 2px;
 }
-.mini-btn:hover { background: rgba(255, 207, 64, 0.28); }
+.mini-btn:hover { background: color-mix(in srgb, var(--accent) 28%, transparent); }
+
+.map-row { display: flex; gap: 12px; margin-bottom: 18px; }
+.map-card {
+  width: 148px; height: 84px;
+  border: 2px solid rgba(255,255,255,0.15);
+  border-radius: 6px;
+  background: #12161b center/cover no-repeat;
+  position: relative; overflow: hidden;
+  cursor: pointer;
+  transition: border-color 0.1s ease, transform 0.1s ease;
+}
+.map-card::after {
+  content: ''; position: absolute; inset: 0;
+  background: linear-gradient(to top, rgba(8,10,13,0.9) 0%, rgba(8,10,13,0.1) 55%);
+}
+.map-card:hover:not(.locked) { transform: translateY(-2px); border-color: color-mix(in srgb, var(--accent) 60%, transparent); }
+.map-card.selected { border-color: var(--accent); }
+.map-card.locked { cursor: default; }
+.map-card .map-name {
+  position: absolute; left: 8px; bottom: 16px; z-index: 1;
+  font: 800 13px "Segoe UI", sans-serif; letter-spacing: 2px;
+}
+.map-card .map-tag {
+  position: absolute; left: 8px; right: 6px; bottom: 4px; z-index: 1;
+  font-size: 9.5px; color: rgba(232,236,239,0.65); letter-spacing: 0.5px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.map-card.selected .map-name { color: var(--accent); }
+
+.ready-btn { background: #3ddc84; }
+.ready-btn.is-ready { background: rgba(255,255,255,0.15); color: #e8ecef; }
+
+.lrow { display: flex; justify-content: space-between; align-items: center; }
+.lrow .rdy { font-size: 10px; letter-spacing: 1px; color: rgba(232,236,239,0.35); }
+.lrow .rdy.on { color: #3ddc84; }
 
 .lobby-cols { display: flex; gap: 16px; align-items: stretch; }
 .lteam {
@@ -343,8 +378,8 @@ html, body {
   padding: 5px 8px; border-radius: 4px;
   background: rgba(255,255,255,0.05);
 }
-.lrow.me { background: rgba(255, 207, 64, 0.14); }
-.lrow .crown { color: #ffcf40; }
+.lrow.me { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.lrow .crown { color: var(--accent); }
 .lempty { font-size: 12px; color: rgba(232,236,239,0.3); padding: 5px 8px; }
 .join-btn {
   margin-top: 10px;
@@ -356,9 +391,9 @@ html, body {
   letter-spacing: 1.5px;
   padding: 9px 0; cursor: pointer;
 }
-.join-btn:hover:not(:disabled) { border-color: #ffcf40; color: #ffcf40; }
+.join-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .join-btn:disabled { opacity: 0.45; cursor: default; }
-.join-btn.current { border-color: rgba(255, 207, 64, 0.6); color: #ffcf40; opacity: 1; }
+.join-btn.current { border-color: color-mix(in srgb, var(--accent) 60%, transparent); color: var(--accent); opacity: 1; }
 
 .lobby-actions {
   margin-top: 26px;
@@ -375,7 +410,7 @@ html, body {
   text-shadow: 0 1px 4px rgba(0,0,0,0.9);
 }
 #spectate-bar .spec-title { font-size: 11px; letter-spacing: 3px; color: rgba(232,236,239,0.55); }
-#spectate-bar .spec-name { font-size: 24px; font-weight: 800; letter-spacing: 2px; color: #ffcf40; }
+#spectate-bar .spec-name { font-size: 24px; font-weight: 800; letter-spacing: 2px; color: var(--accent); }
 #spectate-bar .spec-hint { font-size: 11.5px; color: rgba(232,236,239,0.5); margin-top: 4px; }
 #hud.spectating #crosshair,
 #hud.spectating #health-wrap,
@@ -397,3 +432,41 @@ html, body {
 }
 #scope-overlay .cross-h { width: min(88vh, 88vw); height: 1.5px; transform: translate(-50%, -50%); }
 #scope-overlay .cross-v { height: min(88vh, 88vw); width: 1.5px; transform: translate(-50%, -50%); }
+
+/* ---------- accent theming (cosmetic unlocks recolor this) ---------- */
+:root { --accent: #ffcf40; }
+
+/* ---------- crosshair styles (unlockables) ---------- */
+#crosshair .ring {
+  position: absolute; display: none;
+  width: 18px; height: 18px; left: -9px; top: -9px;
+  border: 1.6px solid rgba(240,245,248,0.92);
+  border-radius: 50%;
+  box-shadow: 0 0 2px rgba(0,0,0,0.8);
+}
+.ch-dot .l { display: none; }
+.ch-dot .dot { width: 4px; height: 4px; left: -2px; top: -2px; border-radius: 50%; }
+.ch-circle .l { display: none; }
+.ch-circle .ring { display: block; }
+.ch-tbar .up { display: none; }
+
+/* ---------- stats & style panel ---------- */
+.unlock-sec { margin-bottom: 22px; text-align: center; }
+.unlock-sec h3 { font-size: 12px; letter-spacing: 2px; margin-bottom: 10px; color: rgba(232,236,239,0.7); }
+.unlock-note { font-size: 10px; letter-spacing: 0.5px; color: rgba(232,236,239,0.4); text-transform: none; }
+.unlock-row { display: flex; gap: 10px; justify-content: center; }
+.unlock-chip {
+  display: flex; align-items: center; gap: 7px;
+  background: rgba(20, 25, 31, 0.92);
+  border: 1px solid rgba(255,255,255,0.16);
+  border-radius: 5px;
+  color: #e8ecef;
+  font: 700 12px "Segoe UI", system-ui, sans-serif;
+  letter-spacing: 1px;
+  padding: 9px 14px; cursor: pointer;
+}
+.unlock-chip .swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+.unlock-chip.sel { border-color: var(--accent); color: var(--accent); }
+.unlock-chip.locked { opacity: 0.4; cursor: default; }
+.unlock-chip.locked span { font-size: 10px; color: rgba(232,236,239,0.5); margin-left: 5px; }
+.unlock-chip:hover:not(.locked):not(.sel) { border-color: rgba(255,255,255,0.4); }

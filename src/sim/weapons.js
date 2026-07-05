@@ -39,8 +39,39 @@ export const WEAPONS = {
     ],
     patternLoop: 4, recoilMaxPitch: deg(3), recover: deg(13),
     aimSpreadMult: 0.6, aimFov: 55, scoped: false,
+    falloffStart: 12, falloffEnd: 28, falloffMin: 0.6,
+  },
+  shotgun: {
+    id: 'shotgun', name: 'TB-8 Breaker', desc: 'Eight pellets of no. Owns the first five meters.',
+    auto: false, interval: 0.85, damage: 13, headMult: 1.4, pellets: 8,
+    mag: 6, reserve: 30, reloadTime: 2.4,
+    spreadBase: deg(3.2), bloomPerShot: deg(0.1), bloomMax: deg(3.6), bloomDecay: deg(4),
+    movePenalty: deg(0.5), airPenalty: deg(1.0), crouchMult: 0.85,
+    pattern: [[2.6, 0.2]],
+    patternLoop: 1, recoilMaxPitch: deg(6), recover: deg(8),
+    aimSpreadMult: 0.7, aimFov: 60, scoped: false,
+    falloffStart: 7, falloffEnd: 20, falloffMin: 0.25,
+  },
+  sniper: {
+    id: 'sniper', name: 'LR-50 Aurora', desc: 'One breath, one shot, one lane.',
+    auto: false, interval: 1.15, damage: 105, headMult: 2.0,
+    mag: 5, reserve: 25, reloadTime: 2.8,
+    spreadBase: deg(2.4), bloomPerShot: deg(0.5), bloomMax: deg(3), bloomDecay: deg(2),
+    movePenalty: deg(2.0), airPenalty: deg(4.0), crouchMult: 0.9,
+    pattern: [[3.2, 0.4]],
+    patternLoop: 1, recoilMaxPitch: deg(7), recover: deg(5),
+    aimSpreadMult: 0.02, aimFov: 18, scoped: true,
   },
 };
+
+// Distance damage falloff (1 at close range, def.falloffMin at long range).
+export function falloff(def, dist) {
+  if (!def.falloffStart) return 1;
+  if (dist <= def.falloffStart) return 1;
+  if (dist >= def.falloffEnd) return def.falloffMin;
+  const f = (dist - def.falloffStart) / (def.falloffEnd - def.falloffStart);
+  return 1 + (def.falloffMin - 1) * f;
+}
 
 export function makeWeaponState(id) {
   const def = WEAPONS[id];
@@ -49,6 +80,9 @@ export function makeWeaponState(id) {
     cooldown: 0, reloading: false, reloadT: 0,
     shotIndex: 0, sinceShot: 99,
     bloom: 0, recoilPitch: 0, recoilYaw: 0,
+    // recoil offsets at trigger time — the kick lands on the NEXT shot,
+    // not the one leaving the barrel
+    shotPitch: 0, shotYaw: 0,
   };
 }
 
@@ -104,7 +138,9 @@ export function weaponTick(w, wantFire, fireEdge, wantReload, dt) {
     return false;
   }
 
-  // fire
+  // fire — this shot leaves with the CURRENT recoil; the kick applies after
+  w.shotPitch = w.recoilPitch;
+  w.shotYaw = w.recoilYaw;
   w.ammo--;
   w.cooldown = def.interval;
   w.sinceShot = 0;

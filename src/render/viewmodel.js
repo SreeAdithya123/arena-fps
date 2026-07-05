@@ -62,7 +62,37 @@ function buildSMG() {
   return { group: g, muzzle: new THREE.Vector3(0, 0.01, -0.28), mag };
 }
 
-const BUILDERS = { ar: buildAR, dmr: buildDMR, smg: buildSMG };
+function buildShotgun() {
+  const g = new THREE.Group();
+  g.add(box(0.085, 0.1, 0.34, DARK, 0, 0, 0.02));             // receiver
+  g.add(cyl(0.022, 0.42, DARK, -0.016, 0.012, -0.33));         // left barrel
+  g.add(cyl(0.022, 0.42, DARK, 0.016, 0.012, -0.33));          // right barrel
+  g.add(box(0.06, 0.05, 0.14, GRIP, 0, -0.045, -0.3));         // pump
+  g.add(box(0.05, 0.035, 0.06, ACCENT, 0, 0.065, -0.08));      // top latch
+  g.add(box(0.05, 0.13, 0.07, GRIP, 0, -0.1, 0.12));           // grip
+  g.add(box(0.065, 0.1, 0.2, GRIP, 0, -0.03, 0.28));           // stock
+  const mag = box(0.05, 0.06, 0.1, DARK, 0, -0.07, 0.0);       // shell tray (reload anim)
+  g.add(mag);
+  return { group: g, muzzle: new THREE.Vector3(0, 0.012, -0.55), mag };
+}
+
+function buildSniper() {
+  const g = new THREE.Group();
+  g.add(box(0.07, 0.095, 0.52, DARK, 0, 0, 0));                // receiver
+  g.add(cyl(0.017, 0.62, DARK, 0, 0.008, -0.56));              // long barrel
+  g.add(cyl(0.028, 0.1, ACCENT, 0, 0.008, -0.85));             // muzzle brake
+  g.add(cyl(0.04, 0.26, DARK, 0, 0.1, -0.04));                 // scope tube
+  g.add(cyl(0.05, 0.035, ACCENT, 0, 0.1, -0.18));              // objective ring
+  g.add(cyl(0.045, 0.03, ACCENT, 0, 0.1, 0.09));               // eyepiece ring
+  g.add(box(0.02, 0.06, 0.02, DARK, 0.05, -0.02, 0.06));       // bolt handle
+  g.add(box(0.05, 0.14, 0.07, GRIP, 0, -0.11, 0.14));          // grip
+  g.add(box(0.06, 0.11, 0.22, GRIP, 0, -0.03, 0.32));          // stock
+  const mag = box(0.04, 0.11, 0.06, GRIP, 0, -0.1, -0.02);
+  g.add(mag);
+  return { group: g, muzzle: new THREE.Vector3(0, 0.008, -0.9), mag };
+}
+
+const BUILDERS = { ar: buildAR, dmr: buildDMR, smg: buildSMG, shotgun: buildShotgun, sniper: buildSniper };
 
 export class ViewModel {
   constructor(camera, scene) {
@@ -111,8 +141,19 @@ export class ViewModel {
     this.swayX = 0;
     this.swayY = 0;
     this.bobT = 0;
+    this.breatheT = 0;
     this.aimFrac = 0;
+    this.sprintFrac = 0;
+    this.inspectT = 0;
     this.activeId = null;
+  }
+
+  setAccent(hex) {
+    ACCENT.color.set(hex);
+  }
+
+  inspect() {
+    if (this.inspectT <= 0 && this.aimFrac < 0.2) this.inspectT = 1.4;
   }
 
   setWeapon(id) {
@@ -133,7 +174,11 @@ export class ViewModel {
   }
 
   onShot(weaponId) {
-    const strength = weaponId === 'dmr' ? 1.8 : weaponId === 'smg' ? 0.6 : 1;
+    const strength =
+      weaponId === 'sniper' ? 2.4 :
+      weaponId === 'shotgun' ? 2.0 :
+      weaponId === 'dmr' ? 1.8 :
+      weaponId === 'smg' ? 0.6 : 1;
     this.kickZ = Math.min(0.09, this.kickZ + 0.045 * strength);
     this.kickRot = Math.min(0.22, this.kickRot + 0.1 * strength);
     this.flashT = 0.05;
@@ -148,7 +193,7 @@ export class ViewModel {
   }
 
   update(dt, opts) {
-    // opts: { mouseDX, mouseDY, speedFrac, onGround, reloadFrac, aiming }
+    // opts: { mouseDX, mouseDY, speedFrac, onGround, reloadFrac, aiming, sprinting }
     if (!this.active) return;
 
     // ADS blend: gun slides toward screen center, sway/bob damp out
@@ -156,6 +201,25 @@ export class ViewModel {
     this.aimFrac += (aimTarget - this.aimFrac) * Math.min(1, dt * 12);
     const a = this.aimFrac;
     const damp = 1 - a * 0.8;
+
+    // sprint pose blend: gun tilts up and across while sprinting
+    this.sprintFrac += ((opts.sprinting && !opts.aiming ? 1 : 0) - this.sprintFrac) * Math.min(1, dt * 8);
+    const sp = this.sprintFrac;
+
+    // idle breathe
+    this.breatheT += dt;
+    const breathe = Math.sin(this.breatheT * 1.7) * 0.0016 * (1 - a);
+
+    // weapon inspect: a slow admire-roll, cancelled by aiming
+    let inspRotY = 0, inspRotX = 0, inspOut = 0;
+    if (this.inspectT > 0) {
+      this.inspectT -= dt;
+      const f = 1 - Math.max(0, this.inspectT) / 1.4; // 0..1
+      const env = Math.sin(f * Math.PI);              // ease in-out
+      inspRotY = env * 0.9;
+      inspRotX = env * 0.25;
+      inspOut = env * 0.06;
+    }
 
     // sway opposes mouse movement, springs back
     this.swayX += (-opts.mouseDX * 0.00028 * damp - this.swayX) * Math.min(1, dt * 10);
@@ -183,16 +247,20 @@ export class ViewModel {
       this.active.mag.position.copy(this.active.magHome);
     }
 
-    // hip pose -> aim pose (centered under the eye)
-    const px = 0.26 * (1 - a);
-    const py = -0.25 + 0.06 * a;
-    const pz = -0.45 + 0.1 * a;
+    // hip pose -> aim pose (centered under the eye), sprint pulls it across
+    const px = 0.26 * (1 - a) - sp * 0.08 + inspOut;
+    const py = -0.25 + 0.06 * a - sp * 0.05 + breathe;
+    const pz = -0.45 + 0.1 * a + sp * 0.06;
     this.root.position.set(
       px + this.swayX + bobX,
       py + this.swayY + bobY - reloadDip * 0.12,
       pz + this.kickZ
     );
-    this.root.rotation.set(-this.kickRot * 0.6 - reloadDip * 0.9 + this.swayY * 2, this.swayX * 2, 0);
+    this.root.rotation.set(
+      -this.kickRot * 0.6 - reloadDip * 0.9 + this.swayY * 2 + sp * 0.28 + inspRotX,
+      this.swayX * 2 + sp * 0.35 + inspRotY,
+      -sp * 0.18
+    );
 
     // fully scoped DMR: hide the gun, the scope overlay takes over
     this.active.group.visible = !this.scopedIn();

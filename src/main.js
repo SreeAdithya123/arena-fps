@@ -4,7 +4,7 @@
 
 import * as THREE from 'three';
 import {
-  createSim, simTick, respawnPlayer, eyePos, currentSpread, DT, ARENA, WEAPONS,
+  createSim, simTick, respawnPlayer, eyePos, currentSpread, DT, WEAPONS, MAPS, DEFAULT_MAP,
 } from './sim/sim.js';
 import { aimDir, norm } from './sim/math.js';
 import { raycastArena } from './sim/arena.js';
@@ -14,8 +14,9 @@ import { GameRenderer } from './render/renderer.js';
 import { ViewModel } from './render/viewmodel.js';
 import { Effects } from './render/effects.js';
 import { Sfx } from './render/audio.js';
-import { NetClient, resolveRemoteHit } from './net.js';
+import { NetClient, resolveRemoteHits } from './net.js';
 import { RemotePlayers } from './render/remotes.js';
+import { Progress } from './progress.js';
 
 const app = document.getElementById('app');
 let state = createSim(1337);
@@ -26,6 +27,21 @@ const viewmodel = new ViewModel(renderer.camera, renderer.scene);
 const effects = new Effects(renderer.scene);
 const sfx = new Sfx();
 const remotesView = new RemotePlayers(renderer.scene);
+const progress = new Progress();
+
+remotesView.onStep = (pos) => sfx.footstep(pos);
+
+function applyCosmetics() {
+  document.documentElement.style.setProperty('--accent', progress.accentColor);
+  viewmodel.setAccent(progress.accentColor);
+  hud.setCrosshairStyle(progress.data.crosshair);
+}
+progress.onChange = applyCosmetics;
+
+// lobby/menu click feedback (audio starts after the first unlock gesture)
+document.addEventListener('click', (e) => {
+  if (e.target.closest('button, .card, .map-card, .mode-btn')) sfx.uiClick();
+});
 
 let mode = 'menu'; // 'menu' | 'bots' | 'friends'
 let net = null;
@@ -46,12 +62,27 @@ const spectate = {
 };
 
 // pre-menu backdrop
-state.player.pos = { ...ARENA.playerSpawns[0].pos };
-input.setView(ARENA.playerSpawns[0].yaw, 0);
+renderer.setMap(state.map);
+state.player.pos = { ...state.map.playerSpawns[0].pos };
+input.setView(state.map.playerSpawns[0].yaw, 0);
 
 let prevEye = eyePos(state.player);
 let currEye = eyePos(state.player);
 const muzzleTmp = new THREE.Vector3();
+
+// Swap the client to a map: fresh sim (bots only in bots mode), new meshes,
+// camera parked at a spawn. No-op when already on that map.
+function setClientMap(mapId, withBots) {
+  if (state.mapId === mapId && (withBots ? state.bots.length > 0 : state.bots.length === 0)) return;
+  state = createSim(withBots ? 1337 : Date.now() % 100000, mapId);
+  if (!withBots) state.bots.length = 0;
+  renderer.setMap(state.map);
+  renderer.setBotsVisible(withBots);
+  state.player.pos = { ...state.map.playerSpawns[0].pos };
+  input.setView(state.map.playerSpawns[0].yaw, 0);
+  prevEye = currEye = eyePos(state.player);
+  sfx.setAmbient(state.map.env.ambient);
+}
 
 function nameOf(id) {
   if (net && id === net.id) return myName;
@@ -80,14 +111,12 @@ function showMainMenu() {
   hud.hideLobby();
   hud.hideMatchUI();
   hud.showScoreboard(false);
-  hud.showMenu(startBots, openFriends);
+  hud.showMenu(startBots, openFriends, () => hud.showStats(progress));
 }
 
 function startBots() {
   hud.hideMenu();
-  state = createSim(1337);
-  state.player.pos = { ...ARENA.playerSpawns[0].pos };
-  renderer.setBotsVisible(true);
+  setClientMap(DEFAULT_MAP, true);
   remotesView.clear();
   mode = 'bots';
   hud.showLoadout(false, pickBotsWeapon, null, showMainMenu);
@@ -123,14 +152,8 @@ async function connectRoom(name, code) {
     matchOver = false;
     netHealth = 100;
 
-    state = createSim(Date.now() % 100000);
-    state.bots.length = 0;
-    renderer.setBotsVisible(false);
+    setClientMap(n.mapId, false);
     rebuildRemotes();
-
-    state.player.pos = { ...ARENA.playerSpawns[0].pos };
-    input.setView(ARENA.playerSpawns[0].yaw, 0);
-    prevEye = currEye = eyePos(state.player);
 
     hud.hideMenu();
     hud.hideFriends();
@@ -160,10 +183,12 @@ function showLobbyScreen() {
   hud.showLobby(net.code, {
     onSwitch: (team) => net.sendSwitchTeam(team),
     onStart: () => net.sendStart(),
+    onReady: (ready) => net.sendReady(ready),
+    onMap: (mapId) => net.sendSetMap(mapId),
     onLeave: leaveRoom,
     link: roomLink(),
   });
-  hud.updateLobby({ leader: net.leader, players: net.board }, net.id, net.team);
+  hud.updateLobby({ leader: net.leader, mapId: net.mapId, players: net.board }, net.id, net.team);
 }
 
 function pickFriendsWeapon(id) {
@@ -177,6 +202,7 @@ function afterSpawn(spawn) {
   prevEye = currEye = eyePos(state.player);
   viewmodel.setWeapon(currentWeapon);
   hud.hideLoadout();
+  sfx.respawn();
   input.lock();
 }
 
@@ -249,7 +275,7 @@ function spectateCamera(dt) {
     // pull the orbit camera in when a wall sits between it and the target
     let r = 4.2;
     const back = norm({ x: -dir.x, y: -dir.y + 0.07, z: -dir.z });
-    const hit = raycastArena(head, back, r);
+    const hit = raycastArena(state.map, head, back, r);
     if (hit) r = Math.max(0.6, hit.t - 0.3);
     spectate.pos = { x: head.x + back.x * r, y: head.y + back.y * r, z: head.z + back.z * r };
     hud.setSpectate(true, nameOf(id));
@@ -278,19 +304,22 @@ function wireNet(n) {
   n.on('left', (msg) => {
     remotesView.remove(msg.id);
     if (!hud.el.lobby.classList.contains('hidden')) {
-      hud.updateLobby({ leader: n.leader, players: n.board }, n.id, n.team);
+      hud.updateLobby({ leader: n.leader, mapId: n.mapId, players: n.board }, n.id, n.team);
     }
   });
   n.on('roster', () => {
     if (!hud.el.lobby.classList.contains('hidden')) {
-      hud.updateLobby({ leader: n.leader, players: n.board }, n.id, n.team);
+      if (mode === 'friends') setClientMap(n.mapId, false); // live map preview behind the lobby
+      hud.updateLobby({ leader: n.leader, mapId: n.mapId, players: n.board }, n.id, n.team);
     }
   });
   n.on('start', () => {
     matchOver = false;
     netHealth = 100;
+    sfx.matchStart();
     hud.hideLobby();
     hud.showScoreboard(false);
+    setClientMap(n.mapId, false);
     rebuildRemotes(); // teams are final now — meshes get the right colors
     hud.showMatchUI(n.code);
     hud.setTeamScores(0, 0);
@@ -303,9 +332,10 @@ function wireNet(n) {
   });
   n.on('shot', (msg) => {
     const o = { x: msg.o[0], y: msg.o[1], z: msg.o[2] };
-    const e = { x: msg.e[0], y: msg.e[1], z: msg.e[2] };
-    effects.tracer(o, e, 0.55);
-    sfx.botShot(Math.hypot(o.x - currEye.x, o.z - currEye.z));
+    for (const e of msg.es || []) {
+      effects.tracer(o, { x: e[0], y: e[1], z: e[2] }, 0.55);
+    }
+    sfx.remoteShot(msg.weapon || 'ar', o);
   });
   n.on('damaged', (msg) => {
     netHealth = msg.health;
@@ -316,12 +346,14 @@ function wireNet(n) {
     if (msg.killed) {
       hud.hitmarker('kill');
       sfx.kill();
+      progress.addKill();
     }
   });
   n.on('death', (msg) => {
     if (msg.victim === net.id) {
       netHealth = 0;
       state.player.alive = false;
+      progress.addDeath();
       sfx.die();
       input.unlock();
       hud.hideResume();
@@ -350,6 +382,9 @@ function wireNet(n) {
   });
   n.on('over', (msg) => {
     matchOver = true;
+    const won = n.team !== 'spec' && msg.scores[n.team] > msg.scores[n.team === 'red' ? 'blue' : 'red'];
+    sfx.matchEnd(won);
+    if (won) progress.addWin();
     input.unlock();
     hud.hideResume();
     hud.hideLoadout();
@@ -387,6 +422,8 @@ function wireNet(n) {
   });
 }
 
+applyCosmetics();
+
 // boot: deep link support — /?room=CODE opens the join screen pre-filled
 const roomParam = new URLSearchParams(location.search).get('room');
 if (roomParam && /^[A-Za-z]{5}$/.test(roomParam)) {
@@ -410,45 +447,52 @@ input.onUnlock = () => {
 function handleEvent(ev) {
   switch (ev.type) {
     case 'shot': {
-      // friends mode: check remote hulls before world feedback
-      let remoteHit = null;
+      // friends mode: run each pellet against remote hulls before world feedback
+      let remoteHits = [];
       if (mode === 'friends' && net) {
-        remoteHit = resolveRemoteHit(ev, net);
-        if (remoteHit) {
-          ev.end = remoteHit.end;
-          net.sendHit(remoteHit.id, remoteHit.damage, remoteHit.headshot, remoteHit.end);
+        remoteHits = resolveRemoteHits(ev, net);
+        for (const h of remoteHits) {
+          net.sendHit(h.id, h.damage, h.headshot, h.end);
         }
-        net.sendFire(ev.origin, ev.end);
+        net.sendFire(ev.origin, ev.pellets.map((p) => p.end));
       }
       viewmodel.onShot(ev.weapon);
       sfx.shot(ev.weapon);
       viewmodel.muzzleWorld(muzzleTmp);
-      effects.tracer(muzzleTmp, ev.end, 1);
-      if (remoteHit) {
-        effects.blood(remoteHit.end);
-        remotesView.flash(remoteHit.id);
-        hud.hitmarker(remoteHit.headshot ? 'head' : 'hit');
-        sfx.hit(remoteHit.headshot);
-        const s = renderer.project(remoteHit.end);
-        if (s) hud.damageNumber(s.x, s.y, remoteHit.damage, remoteHit.headshot);
-      } else if (ev.hit === 'world') {
-        effects.impact(ev.end, ev.mat);
+      for (const pellet of ev.pellets) {
+        effects.tracer(muzzleTmp, pellet.end, 1);
+        if (pellet.hit === 'world') {
+          effects.impact(pellet.end, pellet.mat);
+          effects.decal(pellet.end);
+        }
       }
-      if (ev.hit === 'bot') {
-        effects.blood(ev.end);
-        renderer.flashBot(ev.botId);
-        hud.hitmarker(ev.killed ? 'kill' : ev.headshot ? 'head' : 'hit');
-        if (ev.killed) sfx.kill(); else sfx.hit(ev.headshot);
-        const s = renderer.project(ev.end);
-        if (s) hud.damageNumber(s.x, s.y, ev.damage, ev.headshot);
+      for (const h of remoteHits) {
+        effects.blood(h.end);
+        remotesView.flash(h.id);
+        hud.hitmarker(h.headshot ? 'head' : 'hit');
+        sfx.hit(h.headshot);
+        const s = renderer.project(h.end);
+        if (s) hud.damageNumber(s.x, s.y, h.damage, h.headshot);
+      }
+      for (const h of ev.hits) {
+        const bot = state.bots[h.botId];
+        const at = bot ? { x: bot.pos.x, y: bot.pos.y + 1.2, z: bot.pos.z } : ev.pellets[0].end;
+        effects.blood(at);
+        renderer.flashBot(h.botId);
+        hud.hitmarker(h.killed ? 'kill' : h.headshot ? 'head' : 'hit');
+        if (h.killed) sfx.kill(); else sfx.hit(h.headshot);
+        const s = renderer.project(at);
+        if (s) hud.damageNumber(s.x, s.y, h.damage, h.headshot);
       }
       break;
     }
     case 'botshot': {
       effects.tracer(ev.origin, ev.end, 0.5);
-      if (!ev.hitPlayer && ev.mat) effects.impact(ev.end, ev.mat);
-      const d = Math.hypot(ev.origin.x - currEye.x, ev.origin.z - currEye.z);
-      sfx.botShot(d);
+      if (!ev.hitPlayer && ev.mat) {
+        effects.impact(ev.end, ev.mat);
+        effects.decal(ev.end);
+      }
+      sfx.remoteShot('ar', ev.origin);
       break;
     }
     case 'playerhit':
@@ -457,6 +501,7 @@ function handleEvent(ev) {
       break;
     case 'botdie':
       renderer.killBot(ev.id);
+      progress.addKill();
       break;
     case 'botrespawn':
       renderer.respawnBot(ev.id);
@@ -466,6 +511,7 @@ function handleEvent(ev) {
       break;
     case 'playerdie': // bots mode only; friends deaths come from the server
       sfx.die();
+      progress.addDeath();
       input.unlock();
       hud.hideResume();
       setTimeout(() => {
@@ -482,6 +528,9 @@ let last = performance.now();
 let acc = 0;
 let fps = 60, fpsFrames = 0, fpsTime = 0;
 
+let prevStepPhase = 0;
+let lastInspectKey = false;
+
 function runTick() {
   prevEye = currEye;
   const cmd = input.sample();
@@ -490,6 +539,18 @@ function runTick() {
   currEye = eyePos(state.player);
   renderer.snapshotBots(state.bots);
   for (const ev of events) handleEvent(ev);
+
+  // own footsteps from the sim's walk cycle (two per stride)
+  const p = state.player;
+  if (p.alive && p.onGround) {
+    if (Math.floor(p.stepPhase * 2) !== Math.floor(prevStepPhase * 2)) sfx.footstep(null, true);
+  }
+  prevStepPhase = p.stepPhase;
+
+  // weapon inspect on T
+  const t = input.keys.has('KeyT');
+  if (t && !lastInspectKey && p.alive && !spectate.active) viewmodel.inspect();
+  lastInspectKey = t;
 
   if (mode === 'friends' && net && state.player.alive) {
     stateSendTick++;
@@ -525,6 +586,7 @@ function frame(now) {
   if (spectate.active) {
     const cam = spectateCamera(dt);
     renderer.setCamera(cam.pos, cam.yaw, cam.pitch, 0, 0, 75);
+    sfx.setListener(cam.pos, cam.yaw);
   } else {
     const eye = {
       x: prevEye.x + (currEye.x - prevEye.x) * alpha,
@@ -535,6 +597,7 @@ function frame(now) {
     const recoilY = w ? w.recoilYaw * 0.7 : 0;
     const targetFov = p.aiming && w ? WEAPONS[w.id].aimFov : 75 + (p.sprinting ? 5 : 0);
     renderer.setCamera(eye, input.yaw, input.pitch, recoilP, recoilY, targetFov);
+    sfx.setListener(eye, input.yaw);
   }
 
   renderer.updateBots(state.bots, alpha, dt);
@@ -550,6 +613,7 @@ function frame(now) {
     onGround: p.onGround,
     reloadFrac: w && w.reloading ? 1 - w.reloadT / 2.2 : 0,
     aiming: p.aiming,
+    sprinting: p.sprinting,
   });
   hud.setScope(!spectate.active && viewmodel.scopedIn());
 
@@ -585,14 +649,36 @@ window.__game = {
   fps: () => fps,
   drive: (fn) => { input.drive = fn; },
   hideOverlays: () => { hud.hideMenu(); hud.hideFriends(); hud.hideLobby(); hud.hideLoadout(); hud.hideResume(); },
-  spawn: (weaponId) => { // bots-mode spawn shortcut used by automated checks
-    if (mode !== 'bots') { hud.hideMenu(); state = createSim(1337); renderer.setBotsVisible(true); remotesView.clear(); mode = 'bots'; }
+  spawn: (weaponId, mapId = DEFAULT_MAP) => { // bots-mode spawn shortcut used by automated checks
+    if (mode !== 'bots' || state.mapId !== mapId) {
+      hud.hideMenu();
+      setClientMap(mapId, true);
+      remotesView.clear();
+      mode = 'bots';
+    }
     currentWeapon = weaponId;
     const sp = respawnPlayer(state, weaponId);
     input.setView(sp.yaw, 0);
     prevEye = currEye = eyePos(state.player);
     viewmodel.setWeapon(weaponId);
     hud.hideLoadout();
+  },
+  // Free-camera capture for thumbnails/screenshots (hides the viewmodel).
+  snapAt: (pos, yaw, pitch, w = 560) => {
+    viewmodel.root.visible = false;
+    renderer.camera.fov = 65;
+    renderer.camera.updateProjectionMatrix();
+    renderer.setCamera(pos, yaw, pitch, 0, 0, 65);
+    renderer.updateBots(state.bots, 1, 0.016);
+    effects.update(0.008);
+    renderer.render();
+    viewmodel.root.visible = true;
+    const src = renderer.renderer.domElement;
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = Math.round(w * src.height / src.width);
+    c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+    return c.toDataURL('image/jpeg', 0.62);
   },
   // Render-only cost per frame in ms (n renders + one GPU sync at the end).
   bench: (n = 120) => {
@@ -629,7 +715,12 @@ window.__game = {
     const log = [];
     for (let i = 0; i < n; i++) {
       for (const ev of runTick()) {
-        if (ev.type !== 'botshot') log.push(ev.type + (ev.hit ? ':' + ev.hit : ''));
+        if (ev.type === 'botshot') continue;
+        if (ev.type === 'shot') {
+          log.push('shot:' + (ev.hits.length ? 'bot' : ev.pellets.some((p) => p.hit === 'world') ? 'world' : 'none'));
+        } else {
+          log.push(ev.type);
+        }
       }
     }
     return log;

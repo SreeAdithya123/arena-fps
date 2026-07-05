@@ -2,8 +2,8 @@
 // lighting, bot meshes, camera. Reads sim state; never writes it.
 
 import * as THREE from 'three';
-import { ARENA } from '../sim/arena.js';
-import { BOT_HEAD_Y, BOT_HEAD_R } from '../sim/bots.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { buildSoldier } from './remotes.js';
 
 // ---------- procedural textures (original, canvas-generated) ----------
 
@@ -110,6 +110,21 @@ const MAT_PROPS = {
 
 const BOT_COLORS = [0xc25b4a, 0x4a86c2, 0xc2a24a, 0x7a4ac2, 0x4ac28d];
 
+// Rescale BoxGeometry UVs into world units so merged meshes keep uniform
+// texel density (material repeat stays 1; RepeatWrapping handles >1 UVs).
+// BoxGeometry face order: +x,-x (u=depth,v=height) | +y,-y (u=width,v=depth) | +z,-z (u=width,v=height)
+function scaleBoxUVs(geo, sx, sy, sz, texScale) {
+  const uv = geo.attributes.uv;
+  const dims = [[sz, sy], [sz, sy], [sx, sz], [sx, sz], [sx, sy], [sx, sy]];
+  for (let f = 0; f < 6; f++) {
+    const [du, dv] = dims[f];
+    for (let i = 0; i < 4; i++) {
+      const k = f * 4 + i;
+      uv.setXY(k, uv.getX(k) * du / texScale, uv.getY(k) * dv / texScale);
+    }
+  }
+}
+
 export class GameRenderer {
   constructor(container) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -117,6 +132,9 @@ export class GameRenderer {
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    // arenas are static: bake the shadow map once per map load (characters
+    // use blob shadows), which removes the per-frame shadow pass entirely
+    this.renderer.shadowMap.autoUpdate = false;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.18;
     container.appendChild(this.renderer.domElement);
@@ -135,91 +153,112 @@ export class GameRenderer {
       this.renderer.setSize(window.innerWidth, window.innerHeight);
     });
 
+    this.tex = makeTextures();
+    this.arenaGroup = null;
+    this.botViews = [];
     this.buildLights();
-    this.buildArena();
-    this.buildBots();
 
     this.projVec = new THREE.Vector3();
   }
 
   buildLights() {
-    const hemi = new THREE.HemisphereLight(0xbdd0e4, 0x55503f, 1.15);
-    this.scene.add(hemi);
+    this.hemi = new THREE.HemisphereLight(0xbdd0e4, 0x55503f, 1.15);
+    this.scene.add(this.hemi);
 
-    const sun = new THREE.DirectionalLight(0xffe3b8, 2.4);
-    sun.position.set(18, 30, 12);
-    sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
-    sun.shadow.camera.left = -32;
-    sun.shadow.camera.right = 32;
-    sun.shadow.camera.top = 32;
-    sun.shadow.camera.bottom = -32;
-    sun.shadow.camera.far = 80;
-    sun.shadow.bias = -0.0004;
-    sun.shadow.normalBias = 0.02;
-    this.scene.add(sun);
+    this.sun = new THREE.DirectionalLight(0xffe3b8, 2.4);
+    this.sun.position.set(18, 30, 12);
+    this.sun.castShadow = true;
+    this.sun.shadow.mapSize.set(2048, 2048);
+    this.sun.shadow.camera.left = -32;
+    this.sun.shadow.camera.right = 32;
+    this.sun.shadow.camera.top = 32;
+    this.sun.shadow.camera.bottom = -32;
+    this.sun.shadow.camera.far = 80;
+    this.sun.shadow.bias = -0.0004;
+    this.sun.shadow.normalBias = 0.02;
+    this.scene.add(this.sun);
 
     // cool fill from the opposite side, no shadows — keeps dark faces readable
-    const fill = new THREE.DirectionalLight(0x91a8c8, 0.5);
-    fill.position.set(-14, 18, -20);
-    this.scene.add(fill);
+    this.fill = new THREE.DirectionalLight(0x91a8c8, 0.5);
+    this.fill.position.set(-14, 18, -20);
+    this.scene.add(this.fill);
   }
 
-  buildArena() {
-    const tex = makeTextures();
-    for (const box of ARENA.boxes) {
+  // Build (or swap to) a map: arena meshes, environment, bot meshes.
+  setMap(map) {
+    if (this.mapId === map.id) return;
+    this.mapId = map.id;
+
+    if (this.arenaGroup) {
+      this.scene.remove(this.arenaGroup);
+      this.arenaGroup.traverse((o) => {
+        if (o.geometry) o.geometry.dispose();
+        if (o.material) o.material.dispose(); // textures are shared, keep them
+      });
+    }
+    // one merged mesh per material — ~6 draw calls for the whole arena
+    this.arenaGroup = new THREE.Group();
+    const byMat = new Map();
+    for (const box of map.boxes) {
+      const key = this.tex[box.mat] ? box.mat : 'concrete';
+      if (!byMat.has(key)) byMat.set(key, []);
       const sx = box.max.x - box.min.x;
       const sy = box.max.y - box.min.y;
       const sz = box.max.z - box.min.z;
-      const props = MAT_PROPS[box.mat] || MAT_PROPS.concrete;
-      const t = tex[box.mat] ? tex[box.mat].clone() : tex.concrete.clone();
-      const d1 = Math.max(sx, sz), d2 = Math.max(sy, Math.min(sx, sz));
-      t.repeat.set(Math.max(1, Math.round(d1 / props.texScale)), Math.max(1, Math.round(d2 / props.texScale)));
-      const mat = new THREE.MeshStandardMaterial({
-        map: t, roughness: props.rough, metalness: props.metal,
-      });
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), mat);
-      mesh.position.set(box.min.x + sx / 2, box.min.y + sy / 2, box.min.z + sz / 2);
-      mesh.castShadow = box.mat !== 'floor';
-      mesh.receiveShadow = true;
-      this.scene.add(mesh);
+      const geo = new THREE.BoxGeometry(sx, sy, sz);
+      scaleBoxUVs(geo, sx, sy, sz, (MAT_PROPS[key] || MAT_PROPS.concrete).texScale);
+      geo.translate(box.min.x + sx / 2, box.min.y + sy / 2, box.min.z + sz / 2);
+      byMat.get(key).push(geo);
     }
+    for (const [key, geos] of byMat) {
+      const props = MAT_PROPS[key] || MAT_PROPS.concrete;
+      const merged = mergeGeometries(geos);
+      for (const g of geos) g.dispose();
+      const mesh = new THREE.Mesh(merged, new THREE.MeshStandardMaterial({
+        map: this.tex[key], roughness: props.rough, metalness: props.metal,
+      }));
+      mesh.castShadow = key !== 'floor';
+      mesh.receiveShadow = true;
+      this.arenaGroup.add(mesh);
+    }
+    this.scene.add(this.arenaGroup);
+
+    // per-map environment
+    const env = map.env;
+    this.scene.background.setHex(env.sky);
+    this.scene.fog.color.setHex(env.sky);
+    this.scene.fog.near = env.fogNear;
+    this.scene.fog.far = env.fogFar;
+    this.sun.position.set(...env.sunPos);
+    this.sun.color.setHex(env.sunColor);
+    this.sun.intensity = env.sunIntensity;
+    this.hemi.color.setHex(env.hemiSky);
+    this.hemi.groundColor.setHex(env.hemiGround);
+    this.hemi.intensity = env.hemiIntensity;
+    const span = Math.max(
+      Math.abs(map.bounds.min.x), Math.abs(map.bounds.max.x),
+      Math.abs(map.bounds.min.z), Math.abs(map.bounds.max.z)
+    ) + 12;
+    this.sun.shadow.camera.left = -span;
+    this.sun.shadow.camera.right = span;
+    this.sun.shadow.camera.top = span;
+    this.sun.shadow.camera.bottom = -span;
+    this.sun.shadow.camera.updateProjectionMatrix();
+
+    this.buildBots(map.botSpawns);
+    this.renderer.shadowMap.needsUpdate = true; // re-bake for the new arena
   }
 
-  buildBots() {
-    this.botViews = ARENA.botSpawns.map((s, i) => {
-      const group = new THREE.Group();
-      const accent = new THREE.Color(BOT_COLORS[i % BOT_COLORS.length]);
-
-      const bodyMat = new THREE.MeshStandardMaterial({ color: 0x3a4046, roughness: 0.7, metalness: 0.15 });
-      const accentMat = new THREE.MeshStandardMaterial({ color: accent, roughness: 0.55, metalness: 0.2 });
-      const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.34, 0.72, 6, 14), bodyMat);
-      body.position.y = 0.78;
-      body.castShadow = true;
-      group.add(body);
-
-      // chest plate — accent color for team-read
-      const chest = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.42, 0.18), accentMat);
-      chest.position.set(0, 1.05, -0.28);
-      chest.castShadow = true;
-      group.add(chest);
-
-      const head = new THREE.Mesh(
-        new THREE.SphereGeometry(BOT_HEAD_R, 14, 12),
-        new THREE.MeshStandardMaterial({ color: 0x2b2f34, roughness: 0.4, metalness: 0.5 })
-      );
-      head.position.y = BOT_HEAD_Y;
-      head.castShadow = true;
-      group.add(head);
-
-      // visor strip so facing reads at a glance
-      const visor = new THREE.Mesh(
-        new THREE.BoxGeometry(0.3, 0.08, 0.06),
-        new THREE.MeshStandardMaterial({ color: accent, emissive: accent, emissiveIntensity: 0.9, roughness: 0.3 })
-      );
-      visor.position.set(0, BOT_HEAD_Y + 0.02, -0.21);
-      group.add(visor);
-
+  buildBots(botSpawns) {
+    for (const v of this.botViews) {
+      this.scene.remove(v.group);
+      v.group.traverse((o) => {
+        if (o.geometry) o.geometry.dispose();
+        if (o.material) o.material.dispose();
+      });
+    }
+    this.botViews = botSpawns.map((s, i) => {
+      const { group, bodyMat, accentMat } = buildSoldier(BOT_COLORS[i % BOT_COLORS.length]);
       this.scene.add(group);
       return {
         group, bodyMat, accentMat,

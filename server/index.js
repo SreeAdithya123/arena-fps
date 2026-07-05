@@ -11,7 +11,14 @@
 // match timer. The deterministic sim in src/sim/ stays the seam for a future
 // fully-authoritative server.
 
-import { ARENA } from '../src/sim/arena.js';
+import { MAPS, DEFAULT_MAP } from '../src/sim/arena.js';
+import { WEAPONS } from '../src/sim/weapons.js';
+
+// Per-weapon damage ceiling for one hit message: all pellets, headshot, no falloff.
+const MAX_HIT = {};
+for (const def of Object.values(WEAPONS)) {
+  MAX_HIT[def.id] = Math.ceil(def.damage * def.headMult * (def.pellets || 1));
+}
 
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ'; // no I/O — unambiguous
 const MATCH_MS_DEFAULT = 10 * 60 * 1000;
@@ -20,7 +27,6 @@ const LOBBY_RETURN_MS = 10 * 1000;
 const TEAM_CAP = 6;
 const SPEC_CAP = 6;
 const SNAP_HZ = 20;
-const MAX_HIT_DAMAGE = 110; // DMR headshot; anything above is a tampered client
 
 function makeCode() {
   let code = '';
@@ -56,12 +62,13 @@ export default {
 export class Room {
   constructor(state) {
     this.state = state;
-    this.clients = new Map(); // id -> { ws, name, team('red'|'blue'|'spec'), weapon, health, alive, kills, deaths, p, yaw, pitch, crouch }
+    this.clients = new Map(); // id -> { ws, name, team('red'|'blue'|'spec'), ready, weapon, health, alive, kills, deaths, p, yaw, pitch, crouch }
     this.nextId = 1;
     this.leaderId = null;
     this.scores = { red: 0, blue: 0 };
     this.endsAt = 0;
     this.phase = 'lobby'; // lobby | live | over
+    this.mapId = DEFAULT_MAP;
     this.interval = null;
     this.lobbyTimer = null;
   }
@@ -129,7 +136,7 @@ export class Room {
     const name = String(msg.name || 'PLAYER').slice(0, 14).toUpperCase() || 'PLAYER';
     const spawn = this.pickSpawn(team === 'spec' ? 'red' : team, id);
     const client = {
-      ws, name, team,
+      ws, name, team, ready: false,
       weapon: typeof msg.weapon === 'string' ? msg.weapon : 'ar',
       health: 100, alive: false, kills: 0, deaths: 0,
       p: [spawn.pos.x, spawn.pos.y, spawn.pos.z], yaw: spawn.yaw, pitch: 0, crouch: false,
@@ -174,10 +181,12 @@ export class Room {
         c.crouch = !!msg.crouch;
         if (typeof msg.weapon === 'string') c.weapon = msg.weapon;
         break;
-      case 'fire':
+      case 'fire': {
         if (this.phase !== 'live' || c.team === 'spec') return;
-        this.broadcast({ t: 'shot', id, o: msg.o, e: msg.e }, id);
+        const es = Array.isArray(msg.es) ? msg.es.slice(0, 12) : [];
+        this.broadcast({ t: 'shot', id, o: msg.o, es, weapon: c.weapon }, id);
         break;
+      }
       case 'hit':
         this.applyHit(id, msg);
         break;
@@ -186,6 +195,18 @@ export class Room {
         break;
       case 'switchTeam':
         this.switchTeam(id, msg.team);
+        break;
+      case 'ready':
+        if (c && this.phase === 'lobby' && c.team !== 'spec') {
+          c.ready = !!msg.ready;
+          this.sendRoster();
+        }
+        break;
+      case 'setMap':
+        if (id === this.leaderId && this.phase === 'lobby' && MAPS[msg.map]) {
+          this.mapId = msg.map;
+          this.sendRoster();
+        }
         break;
       case 'start':
         this.startMatch(id, msg.matchMs);
@@ -200,13 +221,18 @@ export class Room {
     const cap = team === 'spec' ? SPEC_CAP : TEAM_CAP;
     if (this.count(team) >= cap) return;
     c.team = team;
+    c.ready = false; // re-confirm after moving
     this.sendRoster();
   }
 
   startMatch(id, matchMs) {
     if (id !== this.leaderId || this.phase !== 'lobby') return;
-    const fighters = [...this.clients.values()].filter((c) => c.team !== 'spec').length;
-    if (fighters < 1) return;
+    const fighters = [...this.clients.values()].filter((c) => c.team !== 'spec');
+    if (fighters.length < 1) return;
+    // every non-spectator except the leader must be ready (starting = leader's ready)
+    for (const [cid, c] of this.clients) {
+      if (c.team !== 'spec' && cid !== this.leaderId && !c.ready) return;
+    }
     if (this.lobbyTimer) { clearTimeout(this.lobbyTimer); this.lobbyTimer = null; }
 
     this.phase = 'live';
@@ -218,8 +244,9 @@ export class Room {
       c.deaths = 0;
       c.alive = false; // everyone re-picks a weapon and respawns
       c.health = 100;
+      c.ready = false; // cleared for the next lobby
     }
-    this.broadcast({ t: 'start', endsAt: this.endsAt });
+    this.broadcast({ t: 'start', endsAt: this.endsAt, map: this.mapId });
     this.sendRoster();
   }
 
@@ -230,7 +257,8 @@ export class Room {
     if (!attacker || !victim || !attacker.alive || !victim.alive) return;
     if (attacker.team === 'spec' || victim.team === 'spec') return;
     if (attacker.team === victim.team) return; // no friendly fire
-    const damage = Math.min(MAX_HIT_DAMAGE, Math.max(1, Math.round(+msg.damage || 0)));
+    const cap = MAX_HIT[attacker.weapon] || 110;
+    const damage = Math.min(cap, Math.max(1, Math.round(+msg.damage || 0)));
 
     victim.health -= damage;
     const killed = victim.health <= 0;
@@ -264,7 +292,7 @@ export class Room {
   }
 
   pickSpawn(team, seed) {
-    const spawns = ARENA.teamSpawns[team];
+    const spawns = MAPS[this.mapId].teamSpawns[team];
     return spawns[(seed + Math.floor(Math.random() * spawns.length)) % spawns.length];
   }
 
@@ -280,6 +308,7 @@ export class Room {
     this.endsAt = 0;
     this.scores = { red: 0, blue: 0 };
     this.leaderId = null;
+    this.mapId = DEFAULT_MAP;
   }
 
   tick() {
@@ -312,8 +341,9 @@ export class Room {
     return {
       phase: this.phase,
       leader: this.leaderId,
+      mapId: this.mapId,
       players: [...this.clients.entries()].map(([id, c]) => ({
-        id, name: c.name, team: c.team, kills: c.kills, deaths: c.deaths, alive: c.alive,
+        id, name: c.name, team: c.team, ready: c.ready, kills: c.kills, deaths: c.deaths, alive: c.alive,
       })),
     };
   }

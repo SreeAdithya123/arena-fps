@@ -1,7 +1,7 @@
 // Bot behavior: patrol waypoints, spot the player, strafe and burst-fire back.
 // Deliberately dumb — the point is having something to shoot that shoots back.
 
-import { ARENA, raycastArena } from './arena.js';
+import { raycastArena } from './arena.js';
 import { slideMove } from './player.js';
 import { eyePos } from './player.js';
 import { dist2d, dist3d, yawPitchTo, aimDir, coneSpread, deg, rayAABB } from './math.js';
@@ -22,7 +22,7 @@ const BOT_DAMAGE = 7;
 const BOT_SPREAD = deg(2.6);
 const RESPAWN_TIME = 4;
 
-export function makeBot(id, spawn) {
+export function makeBot(id, spawn, map) {
   return {
     id,
     spawn: { ...spawn },
@@ -35,13 +35,16 @@ export function makeBot(id, spawn) {
     health: 100,
     alive: true,
     respawnT: 0,
-    wpIndex: (id * 3) % ARENA.waypoints.length,
+    wpIndex: (id * 3) % map.waypoints.length,
     spot: 0,
     burstLeft: 0,
     fireT: 0,
     strafeDir: 1,
     strafeT: 0,
     lastSeenT: 99,
+    stuckT: 0,
+    lastX: spawn.x,
+    lastZ: spawn.z,
   };
 }
 
@@ -60,12 +63,12 @@ export function botBodyAABB(bot) {
   };
 }
 
-function hasLOS(from, to) {
+function hasLOS(map, from, to) {
   const d = { x: to.x - from.x, y: to.y - from.y, z: to.z - from.z };
   const len = Math.hypot(d.x, d.y, d.z);
   if (len < 0.001) return true;
   d.x /= len; d.y /= len; d.z /= len;
-  return raycastArena(from, d, len) === null;
+  return raycastArena(map, from, d, len) === null;
 }
 
 export function botTick(bot, state, events, rng, dt) {
@@ -83,13 +86,14 @@ export function botTick(bot, state, events, rng, dt) {
   }
 
   const p = state.player;
+  const map = state.map;
   const eye = botEye(bot);
 
   // --- sense ---
   let sees = false;
   if (p.alive) {
     const pe = eyePos(p);
-    if (dist3d(eye, pe) < SIGHT_RANGE && hasLOS(eye, pe)) sees = true;
+    if (dist3d(eye, pe) < SIGHT_RANGE && hasLOS(map, eye, pe)) sees = true;
   }
   bot.spot = sees ? bot.spot + dt : Math.max(0, bot.spot - dt * 2);
   if (sees) bot.lastSeenT = 0; else bot.lastSeenT += dt;
@@ -119,17 +123,36 @@ export function botTick(bot, state, events, rng, dt) {
       wishZ += (toP.z / l) * BOT_SPEED * 0.7;
     }
   } else {
-    const wp = ARENA.waypoints[bot.wpIndex];
+    const wp = map.waypoints[bot.wpIndex];
     if (dist2d(bot.pos, wp) < 0.9) {
-      bot.wpIndex = Math.floor(rng() * ARENA.waypoints.length);
+      // linked graph: walk an edge so authored clear lines are respected;
+      // maps without links fall back to a random hop (open layouts)
+      bot.wpIndex = wp.links
+        ? wp.links[Math.floor(rng() * wp.links.length)]
+        : Math.floor(rng() * map.waypoints.length);
+      bot.stuckT = 0;
     } else {
       const dx = wp.x - bot.pos.x, dz = wp.z - bot.pos.z;
       const l = Math.hypot(dx, dz) || 1;
       wishX = (dx / l) * BOT_SPEED;
       wishZ = (dz / l) * BOT_SPEED;
       bot.yaw = Math.atan2(-dx, -dz);
+      // wedged against geometry the graph didn't anticipate: re-roll the target.
+      // Position-based — velocity stays high while a wall clamps movement.
+      const moved = Math.hypot(bot.pos.x - bot.lastX, bot.pos.z - bot.lastZ);
+      if (moved < 0.02) {
+        bot.stuckT += dt;
+        if (bot.stuckT > 1.2) {
+          bot.wpIndex = Math.floor(rng() * map.waypoints.length);
+          bot.stuckT = 0;
+        }
+      } else {
+        bot.stuckT = 0;
+      }
     }
   }
+  bot.lastX = bot.pos.x;
+  bot.lastZ = bot.pos.z;
 
   // --- move (same accel-toward-target scheme as the player, gentler) ---
   const rate = bot.onGround ? 40 : 8;
@@ -141,7 +164,7 @@ export function botTick(bot, state, events, rng, dt) {
     bot.vel.z += (dvz / dl) * step;
   }
   bot.vel.y = Math.max(-40, bot.vel.y - 24 * dt);
-  slideMove(bot, dt);
+  slideMove(bot, map, dt);
 
   // --- fight ---
   bot.fireT -= dt;
@@ -167,7 +190,7 @@ function fireAtPlayer(bot, state, events, rng) {
   const dir = coneSpread(aimDir(yaw, pitch), BOT_SPREAD, rng);
 
   const RANGE = 60;
-  const world = raycastArena(eye, dir, RANGE);
+  const world = raycastArena(state.map, eye, dir, RANGE);
   let tWorld = world ? world.t : RANGE;
 
   // player hull

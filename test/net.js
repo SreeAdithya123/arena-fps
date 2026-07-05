@@ -77,6 +77,22 @@ async function main() {
   a.send({ t: 'respawn', weapon: 'ar' });
   check('cannot spawn during the lobby', (await a.next('respawned', 700)) === null);
 
+  // --- map selection: leader only ---
+  a.drain(); b.drain();
+  b.send({ t: 'setMap', map: 'pipeline' });
+  check('non-leader map change is rejected',
+    (await a.next('roster', 700, (m) => m.mapId === 'pipeline')) === null);
+  a.send({ t: 'setMap', map: 'compound' });
+  const mapRoster = await b.next('roster', 3000, (m) => m.mapId === 'compound');
+  check('leader selects the map for the room', !!mapRoster);
+
+  // --- ready gate: leader cannot start until fighters are ready ---
+  a.drain(); b.drain();
+  a.send({ t: 'start', matchMs: 20000 });
+  check('start is blocked while a fighter is unready', (await a.next('start', 700)) === null);
+  b.send({ t: 'ready', ready: true });
+  await a.next('roster', 3000, (m) => m.players.some((p) => p.id === wb.id && p.ready));
+
   // --- only the leader can start ---
   a.drain(); b.drain();
   b.send({ t: 'start', matchMs: 20000 });
@@ -86,6 +102,7 @@ async function main() {
   const startMsg = await b.next('start', 3000);
   const startedAt = Date.now();
   check('leader start broadcasts to the room', !!startMsg && startMsg.endsAt > Date.now());
+  check('start carries the selected map', !!startMsg && startMsg.map === 'compound', startMsg && startMsg.map);
   check('short test match duration honored (~20s)', !!startMsg && Math.abs(startMsg.endsAt - Date.now() - 20000) < 3000,
     startMsg ? `${startMsg.endsAt - Date.now()}ms` : 'none');
 
@@ -143,6 +160,30 @@ async function main() {
   a.send({ t: 'hit', target: wc.id, damage: 55, headshot: false, e: [0, 1, 0] });
   check('hits on spectators are rejected', (await c.next('damaged', 700)) === null);
 
+  // late joiner lands on a team mid-match and friendly fire is rejected
+  const d = openClient(code, 'DELTA');
+  const wd = await d.next('welcome');
+  check('late joiner enters the live match on a team', !!wd && wd.phase === 'live' && ['red', 'blue'].includes(wd.team));
+  d.send({ t: 'respawn', weapon: 'smg' });
+  await d.next('respawned', 3000, (m) => m.id === wd.id);
+  const mate = wd.team === wa.team ? { client: d, id: wd.id, byA: true } : { client: d, id: wd.id, byA: false };
+  d.drain(); b.drain();
+  if (mate.byA) {
+    a.send({ t: 'hit', target: wd.id, damage: 26, headshot: false, e: [0, 1, 0] });
+    check('friendly fire is rejected', (await d.next('damaged', 700)) === null);
+  } else {
+    b.send({ t: 'hit', target: wd.id, damage: 16, headshot: false, e: [0, 1, 0] });
+    check('friendly fire is rejected', (await d.next('damaged', 700)) === null);
+  }
+
+  // oversized damage clamps to the attacker's weapon ceiling (A holds an AR: 47)
+  a.drain(); b.drain();
+  a.send({ t: 'hit', target: wb.id, damage: 9999, headshot: false, e: [0, 1, 0] });
+  const clamped = await b.next('damaged', 1500);
+  check('9999 damage clamps to the weapon ceiling', !!clamped && clamped.damage <= 47, clamped && String(clamped.damage));
+  d.ws.close();
+  await a.next('left', 3000);
+
   // --- match end -> lobby -> rematch ---
   const untilOver = Math.max(0, startedAt + 20000 - Date.now()) + 4000;
   const over = await a.next('over', untilOver);
@@ -151,6 +192,8 @@ async function main() {
   check('room returns to the lobby after the match', !!lobby && lobby.roster.phase === 'lobby');
 
   a.drain(); b.drain();
+  b.send({ t: 'ready', ready: true }); // ready flags reset between matches
+  await a.next('roster', 3000, (m) => m.players.some((p) => p.id === wb.id && p.ready));
   a.send({ t: 'start', matchMs: 10000 });
   const restart = await b.next('start', 3000);
   check('leader can start a rematch from the lobby', !!restart);
